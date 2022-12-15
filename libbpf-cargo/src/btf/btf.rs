@@ -1,4 +1,3 @@
-use std::cmp::{max, min};
 use std::collections::BTreeSet;
 use std::convert::TryFrom;
 use std::ffi::{c_void, CStr, CString};
@@ -362,7 +361,6 @@ pub struct Btf {
     /// SAFETY: We must not hand out references with a 'static lifetime to
     ///         this member. They should never outlive `self`.
     types: Vec<BtfType<'static>>,
-    ptr_size: u32,
     /// Copy of the raw BTF data from the BPF object.
     ///
     /// SAFETY: Needs to stay last to be dropped last, as other members
@@ -409,9 +407,6 @@ impl Btf {
             "Failed to set BTF endianness"
         );
 
-        let ptr_size = unsafe { libbpf_sys::btf__pointer_size(bpf_obj_btf) };
-        ensure!(ptr_size != 0, "Could not determine BTF pointer size");
-
         let mut raw_data_size = 0;
         let raw_data = unsafe { libbpf_sys::btf__raw_data(bpf_obj_btf, &mut raw_data_size) };
         ensure!(
@@ -454,7 +449,6 @@ impl Btf {
         let btf = Btf {
             _raw_data: raw_data_copy,
             types: BtfLoader::load(type_data, str_data)?,
-            ptr_size: ptr_size as u32,
         };
 
         Ok(Some(btf))
@@ -473,61 +467,21 @@ impl Btf {
     }
 
     pub fn size_of(&self, type_id: u32) -> Result<u32> {
-        let skipped_type_id = self.skip_mods_and_typedefs(type_id)?;
+        let btf = unsafe { libbpf_sys::btf__new(self._raw_data.as_ptr() as * const _, self._raw_data.len() as u32) };
+        let err = unsafe { libbpf_sys::btf__resolve_size(btf, type_id) };
+        unsafe { libbpf_sys::btf__free(btf) };
 
-        Ok(match self.type_by_id(skipped_type_id)? {
-            BtfType::Int(t) => ((t.bits + 7) / 8).into(),
-            BtfType::Ptr(_) => self.ptr_size,
-            BtfType::Array(t) => t.nelems * self.size_of(t.val_type_id)?,
-            BtfType::Struct(t) => t.size,
-            BtfType::Union(t) => t.size,
-            BtfType::Enum(t) => t.size,
-            BtfType::Var(t) => self.size_of(t.type_id)?,
-            BtfType::Datasec(t) => t.size,
-            BtfType::Float(t) => t.size,
-            BtfType::Void
-            | BtfType::Volatile(_)
-            | BtfType::Const(_)
-            | BtfType::Restrict(_)
-            | BtfType::Typedef(_)
-            | BtfType::FuncProto(_)
-            | BtfType::Fwd(_)
-            | BtfType::Func(_)
-            | BtfType::DeclTag(_)
-            | BtfType::TypeTag(_) => bail!("Cannot get size of type_id: {}", skipped_type_id),
-        })
+        ensure!(err >= 0, "libbpf_sys::btf__resolve_size failed with {err}");
+        Ok(err as u32)
     }
 
     pub fn align_of(&self, type_id: u32) -> Result<u32> {
-        let skipped_type_id = self.skip_mods_and_typedefs(type_id)?;
+        let btf = unsafe { libbpf_sys::btf__new(self._raw_data.as_ptr() as * const _, self._raw_data.len() as u32) };
+        let err = unsafe { libbpf_sys::btf__align_of(btf, type_id) };
+        unsafe { libbpf_sys::btf__free(btf) };
 
-        Ok(match self.type_by_id(skipped_type_id)? {
-            BtfType::Int(t) => min(self.ptr_size, ((t.bits + 7) / 8).into()),
-            BtfType::Ptr(_) => self.ptr_size,
-            BtfType::Array(t) => self.align_of(t.val_type_id)?,
-            BtfType::Struct(t) | BtfType::Union(t) => {
-                let mut align = 1;
-                for m in &t.members {
-                    align = max(align, self.align_of(m.type_id)?);
-                }
-
-                align
-            }
-            BtfType::Enum(t) => min(self.ptr_size, t.size),
-            BtfType::Var(t) => self.align_of(t.type_id)?,
-            BtfType::Datasec(t) => t.size,
-            BtfType::Float(t) => min(self.ptr_size, t.size),
-            BtfType::Void
-            | BtfType::Volatile(_)
-            | BtfType::Const(_)
-            | BtfType::Restrict(_)
-            | BtfType::Typedef(_)
-            | BtfType::FuncProto(_)
-            | BtfType::Fwd(_)
-            | BtfType::Func(_)
-            | BtfType::DeclTag(_)
-            | BtfType::TypeTag(_) => bail!("Cannot get alignment of type_id: {}", skipped_type_id),
-        })
+        ensure!(err >= 0, "libbpf_sys::btf__align_of failed with {err}");
+        Ok(err as u32)
     }
 
     /// Returns the rust-ified type declaration of `ty` in string format.
