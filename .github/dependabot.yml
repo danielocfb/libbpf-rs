@@ -10,3 +10,5 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+      time: "11:40"
+      timezone: "America/Los_Angeles"
