@@ -20,10 +20,10 @@ jobs:
           echo "Invalid libbpf-rs version number"
           exit 1
         fi
-        if [ "${libbpf_rs_version}" != "${libbpf_cargo_version}" ]; then
-          echo "libbpf-rs and libbpf-cargo have differing version (${libbpf_rs_version} vs. ${libbpf_cargo_version}"
-          exit 1
-        fi
+        #if [ "${libbpf_rs_version}" != "${libbpf_cargo_version}" ]; then
+        #  echo "libbpf-rs and libbpf-cargo have differing version (${libbpf_rs_version} vs. ${libbpf_cargo_version}"
+        #  exit 1
+        #fi
         echo "version=${libbpf_rs_version}" >> $GITHUB_OUTPUT
   test:
     uses: ./.github/workflows/test.yml
@@ -56,11 +56,11 @@ jobs:
               \"prerelease\":false,
               \"generate_release_notes\":false
             }"
-    - name: Publish libbpf-rs
-      run: cd libbpf-rs && cargo publish --locked --no-verify --token "${CRATES_IO_TOKEN}"
-      env:
-        CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
-    - name: Publish libbpf-cargo
-      run: cd libbpf-cargo && cargo publish --locked --no-verify --token "${CRATES_IO_TOKEN}"
-      env:
-        CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+    #- name: Publish libbpf-rs
+    #  run: cd libbpf-rs && cargo publish --locked --no-verify --token "${CRATES_IO_TOKEN}"
+    #  env:
+    #    CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+    #- name: Publish libbpf-cargo
+    #  run: cd libbpf-cargo && cargo publish --locked --no-verify --token "${CRATES_IO_TOKEN}"
+    #  env:
+    #    CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
