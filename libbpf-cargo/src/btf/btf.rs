@@ -261,7 +261,7 @@ impl<'dat> BtfLoader<'dat> {
             let v = extra.pread::<btf_enum64>(off)?;
             vals.push(BtfEnum64Value {
                 name: Self::get_btf_str(string_table, v.name_off as usize)?,
-                value: ((v.val_hi32 as u64) << 32) | (v.val_lo32 as u64),
+                value: (u64::from(v.val_hi32) << 32) | (u64::from(v.val_lo32)),
             });
 
             off += size_of::<btf_enum64>();
@@ -765,6 +765,52 @@ impl Btf {
         }
     }
 
+
+    fn enum64_def(btf: &BtfEnum64<'_>, def: &mut String) -> Result<()> {
+        let repr_size = match btf.size {
+            1 => "8",
+            2 => "16",
+            4 => "32",
+            8 => "64",
+            _ => bail!("Invalid enum64 size: {}", btf.size),
+        };
+
+        let signed = if btf.signed { "i" } else { "u" };
+
+        writeln!(def, r#"#[derive(Debug, Copy, Clone, PartialEq, Eq)]"#)?;
+        writeln!(def, r#"#[repr({signed}{repr_size})]"#)?;
+        writeln!(def, r#"pub enum {name} {{"#, name = btf.name)?;
+
+        for value in &btf.values {
+            writeln!(
+                def,
+                r#"    {name} = {value},"#,
+                name = value.name,
+                value = value.value,
+            )?;
+        }
+
+        writeln!(def, "}}")?;
+
+        // write an impl Default for this enum
+        if !btf.values.is_empty() {
+            // TODO: remove #[allow(clippy::derivable_impls)]
+            //       once minimum rust at 1.62+
+            writeln!(def, r#"#[allow(clippy::derivable_impls)]"#)?;
+            writeln!(def, r#"impl Default for {name} {{"#, name = btf.name)?;
+            writeln!(def, r#"    fn default() -> Self {{"#)?;
+            writeln!(
+                def,
+                r#"        {name}::{value}"#,
+                name = btf.name,
+                value = btf.values[0].name
+            )?;
+            writeln!(def, r#"    }}"#)?;
+            writeln!(def, r#"}}"#)?;
+        }
+        Ok(())
+    }
+
     /// Returns rust type definition of `ty` in string format, including dependent types.
     ///
     /// `ty` must be a struct, union, enum, or datasec type.
@@ -1038,49 +1084,7 @@ impl Btf {
                         writeln!(def, r#"}}"#)?;
                     }
                 }
-                BtfType::Enum64(t) => {
-                    let repr_size = match t.size {
-                        1 => "8",
-                        2 => "16",
-                        4 => "32",
-                        8 => "64",
-                        _ => bail!("Invalid enum64 size: {}", t.size),
-                    };
-
-                    let signed = if t.signed { "i" } else { "u" };
-
-                    writeln!(def, r#"#[derive(Debug, Copy, Clone, PartialEq, Eq)]"#)?;
-                    writeln!(def, r#"#[repr({signed}{repr_size})]"#)?;
-                    writeln!(def, r#"pub enum {name} {{"#, name = t.name)?;
-
-                    for value in &t.values {
-                        writeln!(
-                            def,
-                            r#"    {name} = {value},"#,
-                            name = value.name,
-                            value = value.value,
-                        )?;
-                    }
-
-                    writeln!(def, "}}")?;
-
-                    // write an impl Default for this enum
-                    if !t.values.is_empty() {
-                        // TODO: remove #[allow(clippy::derivable_impls)]
-                        //       once minimum rust at 1.62+
-                        writeln!(def, r#"#[allow(clippy::derivable_impls)]"#)?;
-                        writeln!(def, r#"impl Default for {name} {{"#, name = t.name)?;
-                        writeln!(def, r#"    fn default() -> Self {{"#)?;
-                        writeln!(
-                            def,
-                            r#"        {name}::{value}"#,
-                            name = t.name,
-                            value = t.values[0].name
-                        )?;
-                        writeln!(def, r#"    }}"#)?;
-                        writeln!(def, r#"}}"#)?;
-                    }
-                }
+                BtfType::Enum64(t) => Self::enum64_def(t, &mut def)?,
                 BtfType::Datasec(t) => {
                     let mut sec_name = t.name.to_string();
                     if sec_name.is_empty() || !sec_name.starts_with('.') {
