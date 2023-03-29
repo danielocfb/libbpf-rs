@@ -1,7 +1,8 @@
+use std::io;
+
 use nix::errno;
 use nix::libc;
 use nix::unistd;
-use std::io;
 
 use crate::*;
 

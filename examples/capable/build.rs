@@ -1,6 +1,7 @@
-use libbpf_cargo::SkeletonBuilder;
 use std::env;
 use std::path::PathBuf;
+
+use libbpf_cargo::SkeletonBuilder;
 
 const SRC: &str = "src/bpf/capable.bpf.c";
 

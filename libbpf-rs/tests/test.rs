@@ -4,16 +4,10 @@ use std::fs;
 use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
+use std::ptr;
 use std::slice;
 use std::sync::mpsc::channel;
 use std::time::Duration;
-
-use nix::errno;
-use plain::Plain;
-use probe::probe;
-use scopeguard::defer;
-use std::ptr;
-use tempfile::NamedTempFile;
 
 use libbpf_rs::num_possible_cpus;
 use libbpf_rs::Iter;
@@ -28,6 +22,11 @@ use libbpf_rs::ProgramType;
 use libbpf_rs::TracepointOpts;
 use libbpf_rs::UprobeOpts;
 use libbpf_rs::UsdtOpts;
+use nix::errno;
+use plain::Plain;
+use probe::probe;
+use scopeguard::defer;
+use tempfile::NamedTempFile;
 
 fn get_test_object_path(filename: &str) -> PathBuf {
     let mut path = PathBuf::new();

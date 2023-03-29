@@ -30,16 +30,16 @@ use std::os::unix::prelude::OwnedFd;
 use std::path::Path;
 use std::ptr::NonNull;
 
+use num_enum::IntoPrimitive;
+use num_enum::TryFromPrimitive;
+
+use self::types::Composite;
 use crate::libbpf_sys;
 use crate::util::create_bpf_entity_checked;
 use crate::util::create_bpf_entity_checked_opt;
 use crate::util::parse_ret_i32;
 use crate::Error;
 use crate::Result;
-use num_enum::IntoPrimitive;
-use num_enum::TryFromPrimitive;
-
-use self::types::Composite;
 
 /// The various btf types.
 #[derive(IntoPrimitive, TryFromPrimitive, Debug, PartialEq, Eq, Clone, Copy)]

@@ -1,9 +1,11 @@
-use crate::*;
-use lazy_static::lazy_static;
 use std::io::Write;
 use std::io::{self};
 use std::os::raw::c_char;
 use std::sync::Mutex;
+
+use lazy_static::lazy_static;
+
+use crate::*;
 
 /// An enum representing the different supported print levels.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
