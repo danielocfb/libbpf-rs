@@ -1083,6 +1083,7 @@ fn build_btf_mmap(prog_text: &str) -> Mmap {
         .read(true)
         .open(proj_dir.as_path().join("target/bpf/prog.bpf.o").as_path())
         .expect("failed to open object file");
+    // SAFETY: Mapping contents are not accessed behind our back.
     unsafe { Mmap::map(&obj) }.expect("Failed to mmap object file")
 }
 

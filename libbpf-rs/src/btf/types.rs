@@ -47,6 +47,7 @@ macro_rules! gen_fieldless_concrete_type {
 
         $(
             impl super::sealed::Sealed for $name<'_> {}
+            #[allow(clippy::undocumented_unsafe_blocks)]
             unsafe impl<'btf> $trait<'btf> for $name<'btf> {}
         )*
     };
@@ -71,18 +72,16 @@ macro_rules! gen_concrete_type {
 
             fn try_from(t: BtfType<'btf>) -> ::core::result::Result<Self, Self::Error> {
                 if t.kind() == BtfKind::$name {
+                    // SAFETY:
+                    // It's in bounds to access the memory following this btf_type
+                    // because we've checked the type
                     let ptr = unsafe {
-                        // SAFETY:
-                        //
-                        // It's in bounds to access the memory following this btf_type
-                        // because we've checked the type
                         (t.ty as *const libbpf_sys::btf_type).offset(1)
                     };
                     let ptr = ptr.cast::<libbpf_sys::$libbpf_ty>();
                     Ok($name {
                         source: t,
                         // SAFETY:
-                        //
                         // This pointer is aligned.
                         //      all fields of all struct have size and
                         //      alignment of u32, if t.ty was aligned, then this must be as well
@@ -108,6 +107,7 @@ macro_rules! gen_concrete_type {
 
         $(
             impl super::sealed::Sealed for $name<'_> {}
+            #[allow(clippy::undocumented_unsafe_blocks)]
             unsafe impl<'btf> $trait<'btf> for $name<'btf> {}
         )*
     };
@@ -179,6 +179,7 @@ macro_rules! gen_collection_members_concrete_type {
 
         $(
             impl $crate::btf::sealed::Sealed for $name<'_> {}
+            #[allow(clippy::undocumented_unsafe_blocks)]
             unsafe impl<'btf> $trait<'btf> for $name<'btf> {}
         )*
     };
@@ -203,26 +204,24 @@ macro_rules! gen_collection_concrete_type {
 
             fn try_from(t: BtfType<'btf>) -> ::core::result::Result<Self, Self::Error> {
                 if t.kind() == BtfKind::$name {
+                    // SAFETY:
+                    // It's in bounds to access the memory following this btf_type
+                    // because we've checked the type
                     let base_ptr = unsafe {
-                        // SAFETY:
-                        //
-                        // It's in bounds to access the memory following this btf_type
-                        // because we've checked the type
                         (t.ty as *const libbpf_sys::btf_type).offset(1)
                     };
+                    // SAFETY:
+                    // This pointer is aligned.
+                    //      all fields of all struct have size and
+                    //      alignment of u32, if t.ty was aligned, then this must be as well
+                    //
+                    // It's initialized
+                    //      libbpf guarantees this since we've checked the type
+                    //
+                    // The lifetime will match the lifetime of the original t.ty reference.
+                    //
+                    // The docs specify the length of the array is stored in vlen.
                     let members = unsafe {
-                        // SAFETY:
-                        //
-                        // This pointer is aligned.
-                        //      all fields of all struct have size and
-                        //      alignment of u32, if t.ty was aligned, then this must be as well
-                        //
-                        // It's initialized
-                        //      libbpf guarantees this since we've checked the type
-                        //
-                        // The lifetime will match the lifetime of the original t.ty reference.
-                        //
-                        // The docs specify the length of the array is stored in vlen.
                         std::slice::from_raw_parts(base_ptr.cast(), t.vlen() as usize)
                     };
                     Ok(Self { source: t, members })
@@ -343,26 +342,20 @@ impl<'btf> TryFrom<BtfType<'btf>> for Int<'btf> {
         if t.kind() == BtfKind::Int {
             let int = {
                 let base_ptr = t.ty as *const libbpf_sys::btf_type;
-                let u32_ptr = unsafe {
-                    // SAFETY:
-                    //
-                    // It's in bounds to access the memory following this btf_type
-                    // because we've checked the type
-                    base_ptr.offset(1).cast::<u32>()
-                };
-                unsafe {
-                    // SAFETY:
-                    //
-                    // This pointer is aligned.
-                    //      all fields of all struct have size and
-                    //      alignment of u32, if t.ty was aligned, then this must be as well
-                    //
-                    // It's initialized
-                    //      libbpf guarantees this since we've checked the type
-                    //
-                    // The lifetime will match the lifetime of the original t.ty reference.
-                    *u32_ptr
-                }
+                // SAFETY:
+                // It's in bounds to access the memory following this btf_type
+                // because we've checked the type
+                let u32_ptr = unsafe { base_ptr.offset(1).cast::<u32>() };
+                // SAFETY:
+                // This pointer is aligned.
+                //      all fields of all struct have size and
+                //      alignment of u32, if t.ty was aligned, then this must be as well
+                //
+                // It's initialized
+                //      libbpf guarantees this since we've checked the type
+                //
+                // The lifetime will match the lifetime of the original t.ty reference.
+                unsafe { *u32_ptr }
             };
             let encoding = match (int & 0x0f_00_00_00) >> 24 {
                 0b1 => IntEncoding::Signed,
@@ -389,8 +382,9 @@ impl<'btf> Deref for Int<'btf> {
     }
 }
 
-// SAFETY: Int has the .size field set.
 impl super::sealed::Sealed for Int<'_> {}
+
+// SAFETY: Int has the .size field set.
 unsafe impl<'btf> HasSize<'btf> for Int<'btf> {}
 
 // Ptr

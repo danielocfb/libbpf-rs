@@ -75,6 +75,8 @@ impl TcHook {
     ///
     /// Will always fail on a `TC_CUSTOM` hook
     pub fn create(&mut self) -> Result<Self> {
+        // SAFETY: The pointer is guaranteed to be valid as it's coming from a
+        //         reference.
         let err = unsafe { libbpf_sys::bpf_tc_hook_create(&mut self.hook as *mut _) };
         // the hook may already exist, this is not an error
         if err != 0 && err != -(EEXIST as i32) {
@@ -154,6 +156,8 @@ impl TcHook {
         opts.prog_fd = 0;
         opts.flags = 0;
 
+        // SAFETY: The pointers are guaranteed to be valid as they are coming
+        //         from references.
         let err = unsafe { libbpf_sys::bpf_tc_query(&self.hook as *const _, &mut opts as *mut _) };
         if err != 0 {
             Err(Error::System(errno::errno()))
@@ -176,6 +180,8 @@ impl TcHook {
     pub fn attach(&mut self) -> Result<Self> {
         self.opts.prog_id = 0;
         let err =
+            // SAFETY: The pointers are guaranteed to be valid as they are coming
+            //         from references.
             unsafe { libbpf_sys::bpf_tc_attach(&self.hook as *const _, &mut self.opts as *mut _) };
         if err != 0 {
             Err(Error::System(errno::errno()))
@@ -191,6 +197,8 @@ impl TcHook {
         opts.prog_fd = 0;
         opts.flags = 0;
 
+        // SAFETY: The pointers are guaranteed to be valid as they are coming
+        //         from references.
         let err = unsafe { libbpf_sys::bpf_tc_detach(&self.hook as *const _, &opts as *const _) };
         if err != 0 {
             Err(Error::System(err))
@@ -214,6 +222,8 @@ impl TcHook {
     /// It is good practice to query before destroying as the tc qdisc may be used by multiple
     /// programs
     pub fn destroy(&mut self) -> Result<()> {
+        // SAFETY: The pointer is guaranteed to be valid as it's coming from a
+        //         reference.
         let err = unsafe { libbpf_sys::bpf_tc_hook_destroy(&mut self.hook as *mut _) };
         if err != 0 {
             Err(Error::System(err))

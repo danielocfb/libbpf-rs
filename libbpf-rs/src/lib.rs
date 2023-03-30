@@ -70,11 +70,15 @@
 #![warn(
     missing_debug_implementations,
     missing_docs,
+    clippy::missing_safety_doc,
+    clippy::multiple_unsafe_ops_per_block,
+    clippy::undocumented_unsafe_blocks,
     clippy::wildcard_imports,
     rustdoc::broken_intra_doc_links
 )]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+#[allow(clippy::undocumented_unsafe_blocks)]
 pub mod btf;
 mod error;
 mod iter;

@@ -29,6 +29,7 @@ use std::os::unix::prelude::FromRawFd;
 use std::os::unix::prelude::OsStrExt;
 use std::os::unix::prelude::OwnedFd;
 use std::path::Path;
+use std::ptr;
 use std::ptr::NonNull;
 
 use crate::libbpf_sys;
@@ -140,8 +141,10 @@ impl Btf<'static> {
                 Error::InvalidInput(format!("invalid path {:?}, has null bytes", path.as_ref()))
             })?
         };
+        // SAFETY: `path` is guaranteed to be valid because it is taken from a
+        //         reference. The second argument can safely be NULL.
         let ptr = create_bpf_entity_checked(|| unsafe {
-            libbpf_sys::btf__parse_elf(path.as_ptr(), std::ptr::null_mut())
+            libbpf_sys::btf__parse_elf(path.as_ptr(), ptr::null_mut())
         })?;
         Ok(Self {
             ptr,
@@ -152,12 +155,12 @@ impl Btf<'static> {
 
     /// Load the btf information of an bpf object from a program id.
     pub fn from_prog_id(id: u32) -> Result<Self> {
+        // SAFETY: The call is always safe.
         let fd = parse_ret_i32(unsafe { libbpf_sys::bpf_prog_get_fd_by_id(id) })?;
-        let fd = unsafe {
-            // SAFETY: parse_ret_i32 will check that this fd is above -1
-            OwnedFd::from_raw_fd(fd)
-        };
+        // SAFETY: parse_ret_i32 will check that this fd is above -1
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
         let mut info = libbpf_sys::bpf_prog_info::default();
+        // SAFETY: All pointer arguments are derived from references.
         parse_ret_i32(unsafe {
             libbpf_sys::bpf_obj_get_info_by_fd(
                 fd.as_raw_fd(),
@@ -166,6 +169,7 @@ impl Btf<'static> {
             )
         })?;
 
+        // SAFETY: The call is always safe.
         let ptr = create_bpf_entity_checked(|| unsafe {
             libbpf_sys::btf__load_from_kernel_by_id(info.btf_id)
         })?;
@@ -185,11 +189,8 @@ impl<'btf> Btf<'btf> {
     }
 
     fn from_bpf_object_raw(obj: *const libbpf_sys::bpf_object) -> Result<Option<Self>> {
-        create_bpf_entity_checked_opt(|| unsafe {
-            // SAFETY: the obj pointer is valid since it's behind a reference.
-            libbpf_sys::bpf_object__btf(obj)
-        })
-        .map(|opt| {
+        // SAFETY: the obj pointer is valid since it's behind a reference.
+        create_bpf_entity_checked_opt(|| unsafe { libbpf_sys::bpf_object__btf(obj) }).map(|opt| {
             opt.map(|ptr| Self {
                 ptr,
                 drop_policy: DropPolicy::Nothing,

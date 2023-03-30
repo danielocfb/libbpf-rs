@@ -25,6 +25,7 @@ pub fn c_ptr_to_string(p: *const c_char) -> Result<String> {
         return Err(Error::Internal("Null string".to_owned()));
     }
 
+    // SAFETY: XXX not safe at all!
     let c_str = unsafe { CStr::from_ptr(p) };
     Ok(c_str
         .to_str()
@@ -39,6 +40,7 @@ pub fn roundup(num: usize, r: usize) -> usize {
 
 /// Get the number of CPUs in the system, e.g., to interact with per-cpu maps.
 pub fn num_possible_cpus() -> Result<usize> {
+    // SAFETY: The function is always safe to call.
     let ret = unsafe { libbpf_sys::libbpf_num_possible_cpus() };
     parse_ret_usize(ret)
 }
@@ -95,10 +97,8 @@ pub fn create_bpf_entity_checked_opt<B: 'static, F: FnOnce() -> *mut B>(
     }
     // SAFETY: `libbpf_get_error` is always safe to call.
     match unsafe { libbpf_sys::libbpf_get_error(ptr as *const _) } {
-        0 => Ok(Some(unsafe {
-            // SAFETY: We checked if the pointer was non null before.
-            NonNull::new_unchecked(ptr)
-        })),
+        // SAFETY: We checked if the pointer was non null before.
+        0 => Ok(Some(unsafe { NonNull::new_unchecked(ptr) })),
         err => Err(Error::System(err as i32)),
     }
 }
