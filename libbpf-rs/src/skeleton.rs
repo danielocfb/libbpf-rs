@@ -294,6 +294,7 @@ impl<'a> Drop for ObjectSkeletonConfig<'a> {
     //    libbpf-cargo's generated skeleton instead gives ownership of the object to
     //    libbpf-rs::*Object. The destructors in libbpf-rs::*Object will know when and how to do
     //    cleanup.
+    #[allow(clippy::undocumented_unsafe_blocks)]
     fn drop(&mut self) {
         assert_eq!(self.maps_layout.is_none(), self.inner.maps.is_null());
         assert_eq!(self.progs_layout.is_none(), self.inner.progs.is_null());

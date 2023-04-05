@@ -868,6 +868,7 @@ impl MapInfo {
     }
 }
 
+#[allow(clippy::undocumented_unsafe_blocks)]
 #[cfg(test)]
 mod tests {
     use super::*;
