@@ -1,3 +1,4 @@
+use std::ffi::CStr;
 use std::fs::create_dir;
 use std::fs::read;
 use std::fs::read_to_string;
@@ -2487,4 +2488,43 @@ double d = 12.15;
         "f64",
         btf.type_declaration(d).expect("Failed to generate d decl")
     );
+}
+
+#[test]
+fn test_btf_dump_enum64() {
+    let prog_text = r#"
+enum LARGE_ENUM {
+	LARGE_ENUM_VALUE = (0xfffffULL << 32),
+};
+
+struct mystruct {
+	enum LARGE_ENUM e;
+};
+
+const struct mystruct *mystruct_ptr = 0;
+"#;
+
+    let mmap = build_btf_mmap(prog_text);
+    let btf = btf_from_mmap(&mmap);
+    let type_ = find_type_in_btf!(btf, types::Enum64<'_>, "LARGE_ENUM");
+    // The enum has one variant, `LARGE_ENUM_VALUE`.
+    assert_eq!(type_.len(), 1);
+    let member = type_.get(0).unwrap();
+    assert_eq!(member.name.map(CStr::to_string_lossy), Some("LARGE_ENUM_VALUE".into()));
+    assert_eq!(member.value, 0xfffffu64 << 32);
+    //assert_eq!(
+    //    "LARGE_ENUM",
+    //    btf.type_declaration(type_id).expect("Failed to generate LARGE_ENUM decl")
+    //);
+    //let type_ = btf.type_by_id(type_id).expect("Failed to lookup enum64");
+    //assert!(type_.kind() == btf::BtfKind::Enum64);
+    //match type_ {
+    //    BtfType::Enum64(e) => {
+    //        assert!(e.name == "LARGE_ENUM");
+    //        assert!(e.values.len() == 1);
+    //        assert!(e.values[0].name == "LARGE_ENUM_VALUE");
+    //        assert!(e.values[0].value == u64::from(0xfffffu32) << 32);
+    //    }
+    //    _ => panic!("wrong BTF type"),
+    //}
 }
