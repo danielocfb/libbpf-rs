@@ -3,6 +3,7 @@ members = [
   "vmlinux",
   "libbpf-cargo",
   "libbpf-rs",
+  "examples/basic",
   "examples/bpf_query",
   "examples/capable",
   "examples/runqslower",
