@@ -242,11 +242,11 @@ fn compile(debug: bool, objs: &[UnprocessedObj], clang: &Path, target_dir: &Path
     Ok(())
 }
 
-fn extract_clang_or_default(clang: Option<&PathBuf>) -> PathBuf {
-    match clang {
+fn extract_command_or_default(command: Option<&PathBuf>, default: &str) -> PathBuf {
+    match command {
         Some(c) => c.into(),
         // Searches $PATH
-        None => "clang".into(),
+        None => default.into(),
     }
 }
 
@@ -269,7 +269,7 @@ pub fn build(
 
     check_progs(&to_compile)?;
 
-    let clang = extract_clang_or_default(clang);
+    let clang = extract_command_or_default(clang, "clang");
     check_clang(debug, &clang, skip_clang_version_checks)
         .with_context(|| anyhow!("{} is invalid", clang.display()))?;
     compile(debug, &to_compile, &clang, &target_dir).context("Failed to compile progs")?;
@@ -286,8 +286,10 @@ pub fn build_single(
     clang: Option<&PathBuf>,
     skip_clang_version_checks: bool,
     options: &str,
+    bpftool: Option<&PathBuf>,
+    vmlinux_h: Option<&PathBuf>,
 ) -> Result<()> {
-    let clang = extract_clang_or_default(clang);
+    let clang = extract_command_or_default(clang, "clang");
     check_clang(debug, &clang, skip_clang_version_checks)?;
     let header_parent_dir = tempdir()?;
     let header_dir = extract_libbpf_headers_to_disk(header_parent_dir.path())?;
@@ -296,6 +298,21 @@ pub fn build_single(
     } else {
         options.to_string()
     };
+
+    if let Some(vmlinux_h) = vmlinux_h {
+        let file = fs::File::create(vmlinux_h)?;
+        let bpftool = extract_command_or_default(bpftool, "bpftool");
+        Command::new(bpftool)
+            .arg("btf")
+            .arg("dump")
+            .arg("file")
+            .arg("/sys/kernel/btf/vmlinux")
+            .arg("format")
+            .arg("c")
+            .stdout(file)
+            .status()?;
+        compiler_options += &format!(" -I{}", vmlinux_h.parent().unwrap().display());
+    }
 
     // Explicitly disable stack protector logic, which doesn't work with
     // BPF. See https://lkml.org/lkml/2020/2/21/1000.
