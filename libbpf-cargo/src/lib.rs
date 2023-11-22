@@ -289,7 +289,7 @@ impl SkeletonBuilder {
             self.clang.as_ref(),
             self.skip_clang_version_check,
             &self.clang_args,
-            self.bpftool.as_ref(),
+            self.bpftool.as_deref(),
             self.vmlinux_h.as_ref(),
         )
         .map_err(Error::Build)?;

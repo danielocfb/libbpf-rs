@@ -286,7 +286,7 @@ pub fn build_single(
     clang: Option<&PathBuf>,
     skip_clang_version_checks: bool,
     options: &str,
-    bpftool: Option<&PathBuf>,
+    bpftool: Option<&Path>,
     vmlinux_h: Option<&PathBuf>,
 ) -> Result<()> {
     let clang = extract_command_or_default(clang, "clang");
@@ -301,7 +301,7 @@ pub fn build_single(
 
     if let Some(vmlinux_h) = vmlinux_h {
         let file = fs::File::create(vmlinux_h)?;
-        let bpftool = extract_command_or_default(bpftool, "bpftool");
+        let bpftool = bpftool.unwrap_or_else(|| Path::new("bpftool"));
         Command::new(bpftool)
             .arg("btf")
             .arg("dump")
