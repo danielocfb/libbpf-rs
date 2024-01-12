@@ -55,14 +55,10 @@ fn get_test_object_path(filename: &str) -> PathBuf {
 
 pub fn open_test_object(filename: &str) -> OpenObject {
     let obj_path = get_test_object_path(filename);
-    let mut builder = ObjectBuilder::default();
-    // Invoke cargo with:
-    //
-    //     cargo test -- --nocapture
-    //
-    // To get all the output
-    builder.debug(true);
-    builder.open_file(obj_path).expect("failed to open object")
+    ObjectBuilder::default()
+        .debug(true)
+        .open_file(obj_path)
+        .expect("failed to open object")
 }
 
 pub fn get_test_object(filename: &str) -> Object {

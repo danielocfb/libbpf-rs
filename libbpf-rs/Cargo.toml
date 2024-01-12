@@ -23,6 +23,16 @@ static = ["libbpf-sys/static"]
 # Use vendored versions of all required libraries.
 vendored = ["libbpf-sys/vendored"]
 
+# Below here are dev-mostly features that should not be needed by
+# regular users.
+
+# Enable this feature to opt in to the generation of unit test files.
+# Having these test files created is necessary for running tests.
+generate-unit-test-files = []
+# Disable generation of test files. This feature takes preference over
+# `generate-unit-test-files`.
+dont-generate-unit-test-files = []
+
 [dependencies]
 bitflags = "2.0"
 libbpf-sys = { version = "1.4.1", default-features = false }
@@ -30,6 +40,7 @@ libc = "0.2"
 vsprintf = "2.0"
 
 [dev-dependencies]
+libbpf-rs = {path = ".", features = ["generate-unit-test-files"]}
 log = "0.4.4"
 memmem = "0.1.1"
 plain = "0.2.3"
