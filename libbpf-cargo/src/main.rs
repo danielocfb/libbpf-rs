@@ -1,6 +1,7 @@
 #![allow(clippy::let_unit_value)]
 #![warn(clippy::absolute_paths)]
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -49,6 +50,9 @@ pub struct ClangArgs {
     /// Path to clang binary
     #[arg(long, value_parser)]
     clang_path: Option<PathBuf>,
+    /// Additional arguments to pass to `clang`.
+    #[arg(long, value_parser)]
+    clang_args: Vec<OsString>,
     /// Skip clang version checks
     #[arg(long)]
     skip_clang_version_checks: bool,

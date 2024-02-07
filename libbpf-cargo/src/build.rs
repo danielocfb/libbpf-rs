@@ -227,7 +227,7 @@ where
     strip_dwarf_info(out).with_context(|| format!("Failed to strip object file {}", out.display()))
 }
 
-fn compile(debug: bool, objs: &[UnprocessedObj], clang: &Path, target_dir: &Path) -> Result<()> {
+fn compile(debug: bool, objs: &[UnprocessedObj], clang: &Path, clang_args: Vec<OsString>, target_dir: &Path) -> Result<()> {
     let header_dir = extract_libbpf_headers_to_disk(target_dir)?;
     let compiler_options = if let Some(dir) = &header_dir {
         vec![OsString::from(format!("-I{}", dir.to_str().unwrap()))]
@@ -267,6 +267,7 @@ pub fn build(
     debug: bool,
     manifest_path: Option<&PathBuf>,
     clang: Option<&PathBuf>,
+    clang_args: Vec<OsString>,
     skip_clang_version_checks: bool,
 ) -> Result<()> {
     let (target_dir, to_compile) = metadata::get(debug, manifest_path)?;
@@ -285,7 +286,7 @@ pub fn build(
     let clang = extract_clang_or_default(clang);
     check_clang(debug, &clang, skip_clang_version_checks)
         .with_context(|| anyhow!("{} is invalid", clang.display()))?;
-    compile(debug, &to_compile, &clang, &target_dir).context("Failed to compile progs")?;
+    compile(debug, &to_compile, &clang, clang_args, &target_dir).context("Failed to compile progs")?;
 
     Ok(())
 }
