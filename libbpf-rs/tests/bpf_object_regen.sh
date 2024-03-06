@@ -43,7 +43,8 @@ function compile() {
     base=$(basename -- $file)
     objname="${base%.*}"
     objname+=".o"
-    clang -g -O2 -target bpf -c $1 -o bin/$objname
+    clang -D__TARGET_ARCH_x86 -I/home/muellerd/local/opt/linux/tools/lib -I/home/muellerd/local/opt/libbpf/src -g -O2 -target bpf -c $1 -o bin/$objname
+    #__TARGET_ARCH_amd64=1 clang -Ilibbpf-bootstrap/examples/c/.output -Ibpf/tools/lib -D__TARGET_ARCH_x86 -g -O2 -target bpf -c $1 -o bin/$objname
 }
 
 if [[ ! -z $BPFTOOL ]]; then
