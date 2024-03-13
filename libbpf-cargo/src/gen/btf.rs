@@ -153,9 +153,9 @@ impl<'s> GenBtf<'s> {
             //
             // It's not like rust code can call a function inside a bpf prog either so we don't
             // really need a full definition. `void *` is totally sufficient for sharing a pointer.
-            BtfKind::Func | BtfKind::FuncProto => "std::ffi::c_void".to_string(),
+            BtfKind::Fwd | BtfKind::Func | BtfKind::FuncProto => "std::ffi::c_void".to_string(),
             BtfKind::Var(t) => self.type_declaration(t.referenced_type())?,
-            _ => bail!("Invalid type: {ty:?}"),
+            _ => bail!("unsupported type for declaration definition: {ty:?}"),
         });
         Ok(s)
     }
@@ -187,7 +187,7 @@ impl<'s> GenBtf<'s> {
                 format!("{}::default()", self.get_type_name_handling_anon_types(&ty)),
             BtfKind::Var(t) =>
                 format!("{}::default()", self.type_declaration(t.referenced_type())?),
-            _ => bail!("Invalid type: {ty:?}"),
+            _ => bail!("unsupported type for default definition: {ty:?}"),
         }))
     }
 
@@ -265,6 +265,7 @@ impl<'s> GenBtf<'s> {
     pub fn type_definition(
         &self,
         ty: BtfType<'s>,
+        indirect_top_level: bool,
         processed: &mut HashSet<TypeId>,
     ) -> Result<String> {
         let is_terminal = |ty: BtfType<'_>| -> bool {
@@ -310,8 +311,8 @@ impl<'s> GenBtf<'s> {
                     self.type_definition_for_composites(&mut def, &mut dependent_types, t)?,
                 BtfKind::Enum(t) => self.type_definition_for_enums(&mut def, t)?,
                 BtfKind::DataSec(t) =>
-                    self.type_definition_for_datasec(&mut def, &mut dependent_types, t)?,
-                _ => bail!("Invalid type: {:?}", ty.kind()),
+                    self.type_definition_for_datasec(&mut def, &mut dependent_types, t, indirect_top_level)?,
+                _ => bail!("unsupported outer type for type definition: {:?}", ty.kind()),
             });
         }
 
@@ -565,6 +566,7 @@ impl<'s> GenBtf<'s> {
         def: &mut String,
         dependent_types: &mut Vec<BtfType<'a>>,
         t: types::DataSec<'_>,
+        indirect: bool,
     ) -> Result<()> {
         let mut sec_name = match t.name().map(|s| s.to_string_lossy()) {
             None => bail!("Datasec name is empty"),
@@ -601,9 +603,14 @@ impl<'s> GenBtf<'s> {
             // Set `offset` to end of current var
             offset = datasec_var.offset + datasec_var.size as u32;
 
+            let ptr = if indirect {
+                "*mut "
+            } else {
+                ""
+            };
             writeln!(
                 def,
-                r#"    pub {var_name}: {var_type},"#,
+                r#"    pub {var_name}: {ptr}{var_type},"#,
                 var_name = var.name().unwrap().to_string_lossy(),
                 var_type = self.type_declaration(*var)?
             )?;

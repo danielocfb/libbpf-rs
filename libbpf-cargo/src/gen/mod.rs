@@ -38,6 +38,7 @@ enum InternalMapType {
     Rodata,
     Bss,
     Kconfig,
+    StructOps,
 }
 
 impl AsRef<str> for InternalMapType {
@@ -48,6 +49,7 @@ impl AsRef<str> for InternalMapType {
             Self::Rodata => "rodata",
             Self::Bss => "bss",
             Self::Kconfig => "kconfig",
+            Self::StructOps => "struct_ops",
         }
     }
 }
@@ -190,6 +192,8 @@ fn canonicalize_internal_map_name(s: &str) -> Option<InternalMapType> {
         Some(InternalMapType::Bss)
     } else if s.ends_with(".kconfig") {
         Some(InternalMapType::Kconfig)
+    } else if s.ends_with(".struct_ops") {
+        Some(InternalMapType::StructOps)
     } else {
         eprintln!("Warning: unrecognized map: {s}");
         None
@@ -426,6 +430,8 @@ fn gen_skel_datasec_defs(skel: &mut String, obj_name: &str, object: &[u8]) -> Re
     };
     let btf = GenBtf::from(btf);
 
+    let mut generated_struct_ops = false;
+
     write!(
         skel,
         r#"
@@ -439,12 +445,31 @@ fn gen_skel_datasec_defs(skel: &mut String, obj_name: &str, object: &[u8]) -> Re
             Some(s) => s.to_str()?,
             None => "",
         };
-        if canonicalize_internal_map_name(name).is_none() {
-            continue;
-        }
 
-        let sec_def = btf.type_definition(*ty, &mut processed)?;
+        let map_type = match canonicalize_internal_map_name(name) {
+            None => continue,
+            Some(map_type) => map_type,
+        };
+
+        let indirect_top_level = if map_type == InternalMapType::StructOps {
+            generated_struct_ops = true;
+            true
+        } else {
+            false
+        };
+        let sec_def = btf.type_definition(*ty, indirect_top_level, &mut processed)?;
         write!(skel, "{sec_def}")?;
+    }
+
+    if !generated_struct_ops {
+        write!(
+            skel,
+            r#"
+            #[derive(Debug, Copy, Clone)]
+            #[repr(C)]
+            pub struct struct_ops {{}}
+            "#,
+        )?;
     }
 
     writeln!(skel, "}}")?;
@@ -489,6 +514,44 @@ fn gen_skel_map_getters(
     };
 
     let () = gen(true)?;
+    let () = gen(false)?;
+    Ok(())
+}
+
+fn gen_skel_struct_ops_getters(
+    skel: &mut String,
+    object: &mut BpfObj,
+    obj_name: &str,
+    open: bool,
+) -> Result<()> {
+    let mut gen = |mutable| -> Result<()> {
+        if MapIter::new(object.as_mut_ptr()).next().is_none() {
+            return Ok(());
+        }
+
+        let (mut_prefix, get_fn) = if mutable {
+            ("mut ", "struct_ops_mut")
+        } else {
+            ("", "struct_ops")
+        };
+
+        write!(
+            skel,
+            r#"
+            pub fn {get_fn}(&{mut_prefix}self) -> &{mut_prefix}{obj_name}_types::struct_ops {{
+                &{mut_prefix}self.struct_ops
+            }}
+            "#,
+        )?;
+
+        Ok(())
+    };
+
+    // `struct_ops` shadow objects can only meaningfully be modified in the
+    // "open" state, so only generate a mutable getter there.
+    if open {
+        let () = gen(true)?;
+    }
     let () = gen(false)?;
     Ok(())
 }
@@ -685,6 +748,27 @@ fn gen_skel_attach(skel: &mut String, object: &mut BpfObj, obj_name: &str) -> Re
     Ok(())
 }
 
+fn gen_skel_struct_ops_init(object: &mut BpfObj) -> Result<String> {
+    let mut def = String::new();
+
+    for map in MapIter::new(object.as_mut_ptr()) {
+        let type_ = unsafe { libbpf_sys::bpf_map__type(map) };
+        if type_ != libbpf_sys::BPF_MAP_TYPE_STRUCT_OPS {
+            continue;
+        }
+
+        let raw_name = get_raw_map_name(map)?;
+
+        write!(
+            def,
+            r#"
+            skel.struct_ops.{raw_name} = skel.maps().{raw_name}().initial_value().unwrap().as_ptr().cast_mut().cast(); //libbpf_sys::bpf_map__initial_value(self.ptr.as_ptr(), std::ptr::null_mut());
+            "#,
+        )?;
+    }
+    Ok(def)
+}
+
 /// Generate contents of a single skeleton
 fn gen_skel_contents(_debug: bool, raw_obj_name: &str, obj_file_path: &Path) -> Result<String> {
     let mut skel = String::new();
@@ -752,10 +836,18 @@ fn gen_skel_contents(_debug: bool, raw_obj_name: &str, obj_file_path: &Path) -> 
 
                 let obj = unsafe {{ libbpf_rs::OpenObject::from_ptr(skel_config.object_ptr())? }};
 
-                Ok(Open{name}Skel {{
+                #[allow(unused_mut)]
+                let mut skel = Open{name}Skel {{
                     obj,
+                    // SAFETY: Our `struct_ops` type contains only pointers,
+                    //         which are allowed to be NULL.
+                    // TODO: Generate and use a `Default` representation
+                    //       instead, to cut down on unsafe code.
+                    struct_ops: unsafe {{ std::mem::zeroed() }},
                     skel_config
-                }})
+                }};
+                {struct_ops_init}
+                Ok(skel)
             }}
 
             fn object_builder(&self) -> &libbpf_rs::ObjectBuilder {{
@@ -766,7 +858,8 @@ fn gen_skel_contents(_debug: bool, raw_obj_name: &str, obj_file_path: &Path) -> 
             }}
         }}
         "#,
-        name = obj_name
+        name = obj_name,
+        struct_ops_init = gen_skel_struct_ops_init(&mut object)?,
     )?;
 
     gen_skel_map_defs(&mut skel, &mut object, &obj_name, true)?;
@@ -779,6 +872,7 @@ fn gen_skel_contents(_debug: bool, raw_obj_name: &str, obj_file_path: &Path) -> 
         r#"
         pub struct Open{name}Skel<'a> {{
             pub obj: libbpf_rs::OpenObject,
+            struct_ops: {raw_obj_name}_types::struct_ops,
             skel_config: libbpf_rs::__internal_skel::ObjectSkeletonConfig<'a>,
         }}
 
@@ -794,6 +888,7 @@ fn gen_skel_contents(_debug: bool, raw_obj_name: &str, obj_file_path: &Path) -> 
 
                 Ok({name}Skel {{
                     obj,
+                    struct_ops: self.struct_ops,
                     skel_config: self.skel_config,
                     {links}
                 }})
@@ -819,6 +914,7 @@ fn gen_skel_contents(_debug: bool, raw_obj_name: &str, obj_file_path: &Path) -> 
 
     gen_skel_prog_getters(&mut skel, &mut object, &obj_name, true)?;
     gen_skel_map_getters(&mut skel, &mut object, &obj_name, true)?;
+    gen_skel_struct_ops_getters(&mut skel, &mut object, raw_obj_name, true)?;
     gen_skel_datasec_getters(&mut skel, &mut object, raw_obj_name, false)?;
     writeln!(skel, "}}")?;
 
@@ -832,6 +928,7 @@ fn gen_skel_contents(_debug: bool, raw_obj_name: &str, obj_file_path: &Path) -> 
         r#"
         pub struct {name}Skel<'a> {{
             pub obj: libbpf_rs::Object,
+            struct_ops: {raw_obj_name}_types::struct_ops,
             skel_config: libbpf_rs::__internal_skel::ObjectSkeletonConfig<'a>,
         "#,
         name = &obj_name,
@@ -862,6 +959,7 @@ fn gen_skel_contents(_debug: bool, raw_obj_name: &str, obj_file_path: &Path) -> 
     write!(skel, "impl {name}Skel<'_> {{", name = &obj_name)?;
     gen_skel_prog_getters(&mut skel, &mut object, &obj_name, false)?;
     gen_skel_map_getters(&mut skel, &mut object, &obj_name, false)?;
+    gen_skel_struct_ops_getters(&mut skel, &mut object, raw_obj_name, false)?;
     gen_skel_datasec_getters(&mut skel, &mut object, raw_obj_name, true)?;
     writeln!(skel, "}}")?;
 
