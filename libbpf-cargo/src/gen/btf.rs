@@ -153,9 +153,9 @@ impl<'s> GenBtf<'s> {
             //
             // It's not like rust code can call a function inside a bpf prog either so we don't
             // really need a full definition. `void *` is totally sufficient for sharing a pointer.
-            BtfKind::Func | BtfKind::FuncProto => "std::ffi::c_void".to_string(),
+            BtfKind::Fwd | BtfKind::Func | BtfKind::FuncProto => "std::ffi::c_void".to_string(),
             BtfKind::Var(t) => self.type_declaration(t.referenced_type())?,
-            _ => bail!("Invalid type: {ty:?}"),
+            _ => bail!("unsupported type for declaration definition: {ty:?}"),
         });
         Ok(s)
     }
@@ -187,7 +187,7 @@ impl<'s> GenBtf<'s> {
                 format!("{}::default()", self.get_type_name_handling_anon_types(&ty)),
             BtfKind::Var(t) =>
                 format!("{}::default()", self.type_declaration(t.referenced_type())?),
-            _ => bail!("Invalid type: {ty:?}"),
+            _ => bail!("unsupported type for default definition: {ty:?}"),
         }))
     }
 
@@ -311,7 +311,7 @@ impl<'s> GenBtf<'s> {
                 BtfKind::Enum(t) => self.type_definition_for_enums(&mut def, t)?,
                 BtfKind::DataSec(t) =>
                     self.type_definition_for_datasec(&mut def, &mut dependent_types, t)?,
-                _ => bail!("Invalid type: {:?}", ty.kind()),
+                _ => bail!("unsupported outer type for type definition: {:?}", ty.kind()),
             });
         }
 

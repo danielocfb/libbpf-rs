@@ -25,6 +25,8 @@ use anyhow::ensure;
 use anyhow::Context;
 use anyhow::Result;
 use libbpf_rs::btf::types;
+use libbpf_rs::btf::BtfType;
+use libbpf_rs::btf::TypeId;
 use libbpf_rs::Btf;
 use memmap2::Mmap;
 
@@ -180,6 +182,8 @@ fn canonicalize_internal_map_name(s: &str) -> Option<&'static str> {
         Some("bss")
     } else if s.ends_with(".kconfig") {
         Some("kconfig")
+    } else if s.ends_with(".struct_ops") {
+        Some("struct_ops")
     } else {
         eprintln!("Warning: unrecognized map: {s}");
         None
@@ -675,6 +679,257 @@ fn gen_skel_attach(skel: &mut String, object: &mut BpfObj, obj_name: &str) -> Re
     Ok(())
 }
 
+//static const struct btf_type *
+//resolve_func_ptr(const struct btf *btf, __u32 id, __u32 *res_id)
+//{
+//  const struct btf_type *t;
+//
+//  t = skip_mods_and_typedefs(btf, id, NULL);
+//  if (!btf_is_ptr(t))
+//    return NULL;
+//
+//  t = skip_mods_and_typedefs(btf, t->type, res_id);
+//
+//  return btf_is_func_proto(t) ? t : NULL;
+//}
+//
+//static int walk_st_ops_shadow_vars(struct btf *btf, const char *ident,
+//           const struct btf_type *map_type, __u32 map_type_id)
+//{
+//  LIBBPF_OPTS(btf_dump_emit_type_decl_opts, opts, .indent_level = 3);
+//  const struct btf_type *member_type;
+//  __u32 offset, next_offset = 0;
+//  const struct btf_member *m;
+//  struct btf_dump *d = NULL;
+//  const char *member_name;
+//  __u32 member_type_id;
+//  int i, err = 0, n;
+//  int size;
+//
+//  d = btf_dump__new(btf, codegen_btf_dump_printf, NULL, NULL);
+//  if (!d)
+//    return -errno;
+//
+//  n = btf_vlen(map_type);
+//  for (i = 0, m = btf_members(map_type); i < n; i++, m++) {
+//    member_type = skip_mods_and_typedefs(btf, m->type, &member_type_id);
+//    member_name = btf__name_by_offset(btf, m->name_off);
+//
+//    offset = m->offset / 8;
+//    if (next_offset < offset)
+//      printf("\t\t\tchar __padding_%d[%d];\n", i, offset - next_offset);
+//
+//    switch (btf_kind(member_type)) {
+//    case BTF_KIND_INT:
+//    case BTF_KIND_FLOAT:
+//    case BTF_KIND_ENUM:
+//    case BTF_KIND_ENUM64:
+//      /* scalar type */
+//      printf("\t\t\t");
+//      opts.field_name = member_name;
+//      err = btf_dump__emit_type_decl(d, member_type_id, &opts);
+//      if (err) {
+//        p_err("Failed to emit type declaration for %s: %d", member_name, err);
+//        goto out;
+//      }
+//      printf(";\n");
+//
+//      size = btf__resolve_size(btf, member_type_id);
+//      if (size < 0) {
+//        p_err("Failed to resolve size of %s: %d\n", member_name, size);
+//        err = size;
+//        goto out;
+//      }
+//
+//      next_offset = offset + size;
+//      break;
+//
+//    case BTF_KIND_PTR:
+//      if (resolve_func_ptr(btf, m->type, NULL)) {
+//        /* Function pointer */
+//        printf("\t\t\tstruct bpf_program *%s;\n", member_name);
+//
+//        next_offset = offset + sizeof(void *);
+//        break;
+//      }
+//      /* All pointer types are unsupported except for
+//       * function pointers.
+//       */
+//      fallthrough;
+//
+//    default:
+//      /* Unsupported types
+//       *
+//       * Types other than scalar types and function
+//       * pointers are currently not supported in order to
+//       * prevent conflicts in the generated code caused
+//       * by multiple definitions. For instance, if the
+//       * struct type FOO is used in a struct_ops map,
+//       * bpftool has to generate definitions for FOO,
+//       * which may result in conflicts if FOO is defined
+//       * in different skeleton files.
+//       */
+//      size = btf__resolve_size(btf, member_type_id);
+//      if (size < 0) {
+//        p_err("Failed to resolve size of %s: %d\n", member_name, size);
+//        err = size;
+//        goto out;
+//      }
+//      printf("\t\t\tchar __unsupported_%d[%d];\n", i, size);
+//
+//      next_offset = offset + size;
+//      break;
+//    }
+//  }
+//
+//  /* Cannot fail since it must be a struct type */
+//  size = btf__resolve_size(btf, map_type_id);
+//  if (next_offset < (__u32)size)
+//    printf("\t\t\tchar __padding_end[%d];\n", size - next_offset);
+//
+//out:
+//  btf_dump__free(d);
+//
+//  return err;
+//}
+//
+///* Generate the pointer of the shadow type for a struct_ops map.
+// *
+// * This function adds a pointer of the shadow type for a struct_ops map.
+// * The members of a struct_ops map can be exported through a pointer to a
+// * shadow type. The user can access these members through the pointer.
+// *
+// * A shadow type includes not all members, only members of some types.
+// * They are scalar types and function pointers. The function pointers are
+// * translated to the pointer of the struct bpf_program. The scalar types
+// * are translated to the original type without any modifiers.
+// *
+// * Unsupported types will be translated to a char array to occupy the same
+// * space as the original field, being renamed as __unsupported_*.  The user
+// * should treat these fields as opaque data.
+// */
+//static int gen_st_ops_shadow_type(const char *obj_name, struct btf *btf, const char *ident,
+//          const struct bpf_map *map)
+//{
+//  const struct btf_type *map_type;
+//  const char *type_name;
+//  __u32 map_type_id;
+//  int err;
+//
+//  map_type_id = bpf_map__btf_value_type_id(map);
+//  if (map_type_id == 0)
+//    return -EINVAL;
+//  map_type = btf__type_by_id(btf, map_type_id);
+//  if (!map_type)
+//    return -EINVAL;
+//
+//  type_name = btf__name_by_offset(btf, map_type->name_off);
+//
+//  printf("\t\tstruct %s__%s__%s {\n", obj_name, ident, type_name);
+//
+//  err = walk_st_ops_shadow_vars(btf, ident, map_type, map_type_id);
+//  if (err)
+//    return err;
+//
+//  printf("\t\t} *%s;\n", ident);
+//
+//  return 0;
+//}
+//
+//
+//static int gen_st_ops_shadow(const char *obj_name, struct btf *btf, struct bpf_object *obj)
+//{
+//  int err, st_ops_cnt = 0;
+//  struct bpf_map *map;
+//  char ident[256];
+//
+//  if (!btf)
+//    return 0;
+//
+//  /* Generate the pointers to shadow types of
+//   * struct_ops maps.
+//   */
+//  bpf_object__for_each_map(map, obj) {
+//    if (bpf_map__type(map) != BPF_MAP_TYPE_STRUCT_OPS)
+//      continue;
+//    if (!get_map_ident(map, ident, sizeof(ident)))
+//      continue;
+//
+//    if (st_ops_cnt == 0) /* first struct_ops map */
+//      printf("\tstruct {\n");
+//    st_ops_cnt++;
+//
+//    err = gen_st_ops_shadow_type(obj_name, btf, ident, map);
+//    if (err)
+//      return err;
+//  }
+//
+//  if (st_ops_cnt)
+//    printf("\t} struct_ops;\n");
+//
+//  return 0;
+//}
+
+fn gen_skel_struct_ops_type(skel: &mut String, map_name: &str) -> Result<()> {
+    //let struct_name = format!("{obj_name}_types::{name}");
+    write!(
+        skel,
+        r#"
+        //xxx
+        "#
+    )?;
+    Ok(())
+}
+
+fn gen_skel_struct_ops_defs(
+    skel: &mut String,
+    object: &mut BpfObj,
+    btf: &GenBtf<'_>,
+    processed: &mut HashSet<TypeId>,
+) -> Result<()> {
+    for map in MapIter::new(object.as_mut_ptr()) {
+        let type_ = unsafe { libbpf_sys::bpf_map__type(map) };
+        if type_ != libbpf_sys::BPF_MAP_TYPE_STRUCT_OPS {
+            continue;
+        }
+        let type_id = unsafe { libbpf_sys::bpf_map__btf_value_type_id(map) };
+        if type_id == 0 {
+            if let Ok(name) = get_raw_map_name(map) {
+                bail!("failed to find BTF type for map `{name}`");
+            } else {
+                bail!("failed to find BTF type for map");
+            }
+        }
+
+        let ty = btf
+            .type_by_id::<BtfType<'_>>(TypeId::from(type_id))
+            .with_context(|| format!("failed to find BTF type with ID {type_id}"))?;
+
+        let sec_def = btf.type_definition(ty, processed)?;
+        write!(skel, "{sec_def}")?;
+    }
+    Ok(())
+}
+
+fn gen_skel_struct_ops_init(skel: &mut String, object: &mut BpfObj) -> Result<()> {
+    for map in MapIter::new(object.as_mut_ptr()) {
+        let type_ = unsafe { libbpf_sys::bpf_map__type(map) };
+        if type_ != libbpf_sys::BPF_MAP_TYPE_STRUCT_OPS {
+            continue;
+        }
+
+        let raw_name = get_raw_map_name(map)?;
+
+        write!(
+            skel,
+            r#"
+            obj.struct_ops.{raw_name} = libbpf_sys::bpf_map__initial_value(self.ptr.as_ptr(), std::ptr::null_mut());
+            "#,
+        )?;
+    }
+    Ok(())
+}
+
 /// Generate contents of a single skeleton
 fn gen_skel_contents(_debug: bool, raw_obj_name: &str, obj_file_path: &Path) -> Result<String> {
     let mut skel = String::new();
@@ -739,7 +994,15 @@ fn gen_skel_contents(_debug: bool, raw_obj_name: &str, obj_file_path: &Path) -> 
                 if ret != 0 {{
                     return Err(libbpf_rs::Error::from_raw_os_error(-ret));
                 }}
+        "#,
+        name = obj_name
+    )?;
 
+    //let () = gen_skel_struct_ops_init(&mut skel, &mut object)?;
+
+    write!(
+        skel,
+        r#"
                 let obj = unsafe {{ libbpf_rs::OpenObject::from_ptr(skel_config.object_ptr())? }};
 
                 Ok(Open{name}Skel {{
