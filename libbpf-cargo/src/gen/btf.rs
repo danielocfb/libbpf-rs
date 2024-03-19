@@ -335,22 +335,50 @@ impl<'s> GenBtf<'s> {
         let mut gen_impl_default = false; // whether to output impl Default or use #[derive]
 
         let mut offset = 0; // In bytes
-        for member in t.iter() {
-            let member_offset = match member.attr {
-                MemberAttr::Normal { offset } => offset,
-                _ => bail!("Struct bitfields not supported"),
-            };
-
+        let mut members = t.iter().peekable();
+        while let Some(member) = members.next() {
             let field_ty = self
                 .type_by_id::<BtfType<'_>>(member.ty)
                 .unwrap()
                 .skip_mods_and_typedefs();
             let field_ty_str = self.type_declaration(field_ty)?;
-            let field_name = if let Some(name) = member.name {
-                name.to_string_lossy()
-            } else {
-                Cow::Borrowed(field_ty_str.as_str())
+            let field_size = self.size_of(field_ty)?;
+
+            let (field_name, member_offset) = match member.attr {
+                MemberAttr::Normal { offset } => {
+                    let field_name = if let Some(name) = member.name {
+                        name.to_string_lossy()
+                    } else {
+                        Cow::Borrowed(field_ty_str.as_str())
+                    };
+                    (field_name, offset)
+                }
+                MemberAttr::BitField { size: _, offset } => {
+                    // Take a peek at the next member(s). If it is another
+                    // bitfield and it is still subsumed by the bitfield's type,
+                    // we just continue consuming it without any action. In the
+                    // end we end up emitting just a single field of the
+                    // bitfield's underlying type.
+                    while members
+                        .next_if(|next_member| match next_member.attr {
+                            MemberAttr::BitField {
+                                size: next_size,
+                                offset: next_offset,
+                            } => {
+                                next_offset as usize + usize::from(next_size)
+                                    < offset as usize + field_size * 8
+                            }
+                            MemberAttr::Normal { .. } => false,
+                        })
+                        .is_some()
+                    {}
+
+                    let field_name =
+                        Cow::Owned(format!("__bitfield_{offset}", offset = offset / 8));
+                    (field_name, offset)
+                }
             };
+
             if let Some(next_ty_id) = next_type(field_ty)? {
                 dependent_types.push(next_ty_id);
             }
