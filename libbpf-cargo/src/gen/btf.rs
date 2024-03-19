@@ -345,6 +345,12 @@ impl<'s> GenBtf<'s> {
                 .type_by_id::<BtfType<'_>>(member.ty)
                 .unwrap()
                 .skip_mods_and_typedefs();
+            let field_ty_str = self.type_declaration(field_ty)?;
+            let field_name = if let Some(name) = member.name {
+                name.to_string_lossy()
+            } else {
+                Cow::Borrowed(field_ty_str.as_str())
+            };
             if let Some(next_ty_id) = next_type(field_ty)? {
                 dependent_types.push(next_ty_id);
             }
@@ -392,11 +398,6 @@ impl<'s> GenBtf<'s> {
 
                     impl_default.push(format!(
                         r#"            {field_name}: {field_ty_str}"#,
-                        field_name = if let Some(name) = member.name {
-                            name.to_string_lossy()
-                        } else {
-                            self.get_type_name_handling_anon_types(&field_ty)
-                        },
                         field_ty_str = def
                     ));
                 }
@@ -409,13 +410,6 @@ impl<'s> GenBtf<'s> {
 
             // Set `offset` to end of current var
             offset = (member_offset / 8) as usize + self.size_of(field_ty)?;
-
-            let field_ty_str = self.type_declaration(field_ty)?;
-            let field_name = if let Some(name) = member.name {
-                name.to_string_lossy()
-            } else {
-                Cow::Borrowed(field_ty_str.as_str())
-            };
 
             let field_ty_str = if is_unsafe(field_ty) {
                 Cow::Owned(format!("std::mem::MaybeUninit<{field_ty_str}>"))
