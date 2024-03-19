@@ -342,40 +342,75 @@ impl<'s> GenBtf<'s> {
                 .unwrap()
                 .skip_mods_and_typedefs();
             let field_ty_str = self.type_declaration(field_ty)?;
-            let field_size = self.size_of(field_ty)?;
+            let field_name = if let Some(name) = member.name {
+                name.to_string_lossy()
+            } else {
+                Cow::Borrowed(field_ty_str.as_str())
+            };
 
-            let (field_name, member_offset) = match member.attr {
-                MemberAttr::Normal { offset } => {
-                    let field_name = if let Some(name) = member.name {
-                        name.to_string_lossy()
-                    } else {
-                        Cow::Borrowed(field_ty_str.as_str())
-                    };
-                    (field_name, offset)
-                }
-                MemberAttr::BitField { size: _, offset } => {
-                    // Take a peek at the next member(s). If it is another
-                    // bitfield and it is still subsumed by the bitfield's type,
-                    // we just continue consuming it without any action. In the
-                    // end we end up emitting just a single field of the
-                    // bitfield's underlying type.
+            let (field_name, field_offset) = match member.attr {
+                MemberAttr::Normal {
+                    offset: field_offset,
+                } => (field_name, field_offset),
+                MemberAttr::BitField {
+                    size: field_size,
+                    offset: field_offset,
+                } => {
+                    let field_type_size = self.size_of(field_ty)?;
+                    let mut multiple = false;
+                    let mut next_start_offset = field_offset + u32::from(field_size);
+                    // Eagerly consume all follow up members that "belong" to
+                    // the same bitfield, so that in the end we end up emitting
+                    // just a single field of the bitfield's underlying type.
                     while members
-                        .next_if(|next_member| match next_member.attr {
-                            MemberAttr::BitField {
-                                size: next_size,
-                                offset: next_offset,
-                            } => {
-                                next_offset as usize + usize::from(next_size)
-                                    < offset as usize + field_size * 8
+                        .next_if(|next_member| {
+                            let next_field_ty = self
+                                .type_by_id::<BtfType<'_>>(next_member.ty)
+                                .unwrap()
+                                .skip_mods_and_typedefs();
+                            // A change in the underlying type surely means a
+                            // new member not belonging to the same bitfield.
+                            if next_field_ty.type_id() != field_ty.type_id() {
+                                return false;
                             }
-                            MemberAttr::Normal { .. } => false,
+
+                            match next_member.attr {
+                                MemberAttr::BitField {
+                                    size: next_size,
+                                    offset: next_offset,
+                                } => {
+                                    // Make sure that this member starts where
+                                    // the previous ended. One can't have gaps
+                                    // in bitfields.
+                                    if next_start_offset != next_offset {
+                                        return false;
+                                    }
+
+                                    next_start_offset = next_offset + u32::from(next_size);
+
+                                    // Once we exceed the underlying type's
+                                    // size, we also must emit a new member.
+                                    (next_start_offset as usize)
+                                        <= (field_offset as usize + field_type_size * 8)
+                                }
+                                MemberAttr::Normal { .. } => false,
+                            }
                         })
                         .is_some()
-                    {}
+                    {
+                        multiple = true;
+                    }
 
-                    let field_name =
-                        Cow::Owned(format!("__bitfield_{offset}", offset = offset / 8));
-                    (field_name, offset)
+                    // If a bitfield is present in a composite type, BTF will
+                    // mark all members in said types as bitfields. However, we
+                    // only want to rename "true" bitfields that are comprised
+                    // of multiple bit areas.
+                    let field_name = if multiple {
+                        Cow::Owned(format!("__bitfield_{}", field_offset / 8))
+                    } else {
+                        field_name
+                    };
+                    (field_name, field_offset)
                 }
             };
 
@@ -385,9 +420,10 @@ impl<'s> GenBtf<'s> {
 
             // Add padding as necessary
             if t.is_struct {
+                println!("HANDLING: {field_name}");
                 let padding = self.required_padding(
                     offset,
-                    member_offset as usize / 8,
+                    field_offset as usize / 8,
                     &self.type_by_id::<BtfType<'_>>(member.ty).unwrap(),
                     packed,
                 )?;
@@ -437,7 +473,9 @@ impl<'s> GenBtf<'s> {
             };
 
             // Set `offset` to end of current var
-            offset = (member_offset / 8) as usize + self.size_of(field_ty)?;
+            println!("OLD OFFSET: {offset}");
+            offset = (field_offset / 8) as usize + self.size_of(field_ty)?;
+            println!("NEW OFFSET: {offset}");
 
             let field_ty_str = if is_unsafe(field_ty) {
                 Cow::Owned(format!("std::mem::MaybeUninit<{field_ty_str}>"))

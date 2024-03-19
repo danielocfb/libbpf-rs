@@ -1246,6 +1246,8 @@ macro_rules! find_type_in_btf {
 /// fails calling test if unable to compile
 fn build_btf_mmap(prog_text: &str) -> Mmap {
     let (_dir, proj_dir, cargo_toml) = setup_temp_project();
+    //let p = _dir.into_path();
+    //println!("PATH: {p:?}");
 
     // Add prog dir
     create_dir(proj_dir.join("src/bpf")).expect("failed to create prog dir");
