@@ -2,7 +2,6 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::fmt::Write;
 use std::mem::size_of;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
@@ -11,9 +10,8 @@ use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::ensure;
 use anyhow::Result;
+
 use libbpf_rs::btf::types;
-use libbpf_rs::btf::types::Linkage;
-use libbpf_rs::btf::types::MemberAttr;
 use libbpf_rs::btf::BtfKind;
 use libbpf_rs::btf::BtfType;
 use libbpf_rs::btf::TypeId;
@@ -22,13 +20,16 @@ use libbpf_rs::Btf;
 use libbpf_rs::HasSize;
 use libbpf_rs::ReferencesType;
 
+use super::definition::DefinitionVisitor;
+use super::visit::visit_type_hierarchy;
+
 const ANON_PREFIX: &str = "__anon_";
 
 /// Check whether the provided type is "unsafe" to use.
 ///
 /// A type is considered unsafe by this function if it is not valid for
 /// any bit pattern.
-fn is_unsafe(ty: BtfType<'_>) -> bool {
+pub(crate) fn is_unsafe(ty: BtfType<'_>) -> bool {
     let ty = ty.skip_mods_and_typedefs();
 
     btf_type_match!(match ty {
@@ -38,7 +39,7 @@ fn is_unsafe(ty: BtfType<'_>) -> bool {
     })
 }
 
-fn is_struct_packed(composite: &types::Composite<'_>, btf: &Btf<'_>) -> Result<bool> {
+pub(crate) fn is_struct_packed(btf: &Btf<'_>, composite: &types::Composite<'_>) -> Result<bool> {
     if !composite.is_struct {
         return Ok(false);
     }
@@ -54,7 +55,7 @@ fn is_struct_packed(composite: &types::Composite<'_>, btf: &Btf<'_>) -> Result<b
     for m in composite.iter() {
         let align = btf.type_by_id::<BtfType<'_>>(m.ty).unwrap().alignment()?;
 
-        if let MemberAttr::Normal { offset } = m.attr {
+        if let types::MemberAttr::Normal { offset } = m.attr {
             if offset as usize % (align.get() * 8) != 0 {
                 return Ok(true);
             }
@@ -69,7 +70,7 @@ fn is_struct_packed(composite: &types::Composite<'_>, btf: &Btf<'_>) -> Result<b
 /// Given a `current_offset` (in bytes) into a struct and a `required_offset` (in bytes) that
 /// type `type_id` needs to be placed at, returns how much padding must be inserted before
 /// `type_id`.
-fn required_padding(
+pub(crate) fn required_padding(
     current_offset: usize,
     required_offset: usize,
     ty: &BtfType<'_>,
@@ -105,7 +106,7 @@ fn required_padding(
     }
 }
 
-fn type_declaration(ty: BtfType<'_>, anon_types: &AnonTypes) -> Result<String> {
+pub(crate) fn type_declaration(ty: BtfType<'_>, anon_types: &AnonTypes) -> Result<String> {
     let ty = ty.skip_mods_and_typedefs();
 
     let s = btf_type_match!(match ty {
@@ -173,7 +174,7 @@ fn type_declaration(ty: BtfType<'_>, anon_types: &AnonTypes) -> Result<String> {
 /// Rule of thumb is `ty` must be a type a variable can have.
 ///
 /// Type qualifiers are discarded (eg `const`, `volatile`, etc).
-fn type_default(ty: BtfType<'_>, anon_types: &AnonTypes) -> Result<String> {
+pub(crate) fn type_default(ty: BtfType<'_>, anon_types: &AnonTypes) -> Result<String> {
     let ty = ty.skip_mods_and_typedefs();
 
     Ok(btf_type_match!(match ty {
@@ -198,7 +199,7 @@ fn type_default(ty: BtfType<'_>, anon_types: &AnonTypes) -> Result<String> {
     }))
 }
 
-fn size_of_type(ty: BtfType<'_>, btf: &Btf<'_>) -> Result<usize> {
+pub(crate) fn size_of_type(ty: BtfType<'_>, btf: &Btf<'_>) -> Result<usize> {
     let ty = ty.skip_mods_and_typedefs();
 
     Ok(btf_type_match!(match ty {
@@ -216,7 +217,7 @@ fn size_of_type(ty: BtfType<'_>, btf: &Btf<'_>) -> Result<usize> {
     }))
 }
 
-fn escape_reserved_keyword(identifier: Cow<'_, str>) -> Cow<'_, str> {
+pub(crate) fn escape_reserved_keyword(identifier: Cow<'_, str>) -> Cow<'_, str> {
     // A list of keywords that need to be escaped in Rust when used for variable
     // names or similar (from https://doc.rust-lang.org/reference/keywords.html#keywords,
     // minus keywords that are already reserved in C).
@@ -341,329 +342,18 @@ impl<'s> GenBtf<'s> {
             "Tried to print type definition for terminal type"
         );
 
-        // Process dependent types until there are none left.
-        //
-        // When we hit a terminal, we write out some stuff. A non-terminal adds more types to
-        // the queue.
-        let mut def = String::new();
-        let mut dependent_types = vec![ty];
-        while !dependent_types.is_empty() {
-            let ty = dependent_types.remove(0);
-            if !processed.insert(ty.type_id()) {
-                continue;
-            }
-
-            btf_type_match!(match ty {
-                BtfKind::Composite(t) =>
-                    self.type_definition_for_composites(&mut def, &mut dependent_types, t)?,
-                BtfKind::Enum(t) => self.type_definition_for_enums(&mut def, t)?,
-                BtfKind::DataSec(t) =>
-                    self.type_definition_for_datasec(&mut def, &mut dependent_types, t)?,
-                _ => bail!("Invalid type: {:?}", ty.kind()),
-            });
-        }
-
-        Ok(def)
-    }
-
-    fn type_definition_for_composites<'a>(
-        &'a self,
-        def: &mut String,
-        dependent_types: &mut Vec<BtfType<'a>>,
-        t: types::Composite<'_>,
-    ) -> Result<()> {
-        let packed = is_struct_packed(&t, &self.btf)?;
-
-        // fields in the aggregate
-        let mut agg_content: Vec<String> = Vec::new();
-
-        // structs with arrays > 32 length need to impl Default
-        // rather than #[derive(Default)]
-        let mut impl_default: Vec<String> = Vec::new(); // output for impl Default
-        let mut gen_impl_default = false; // whether to output impl Default or use #[derive]
-
-        let mut offset = 0; // In bytes
-        for member in t.iter() {
-            let member_offset = match member.attr {
-                MemberAttr::Normal { offset } => offset,
-                // Bitfields are tricky to get correct, if at all possible. For
-                // now we just skip them, which results in them being covered by
-                // padding bytes.
-                MemberAttr::BitField { .. } => continue,
-            };
-
-            let field_ty = self
-                .type_by_id::<BtfType<'_>>(member.ty)
-                .unwrap()
-                .skip_mods_and_typedefs();
-            if let Some(next_ty_id) = next_type(field_ty)? {
-                dependent_types.push(next_ty_id);
-            }
-            let field_name = if let Some(name) = member.name {
-                escape_reserved_keyword(name.to_string_lossy())
-            } else {
-                // Only anonymous unnamed unions should ever have no name set.
-                // We just name them the same as their anonymous type. As there
-                // can only be one member of this very type, there can't be a
-                // conflict.
-                self.anon_types.type_name_or_anon(&field_ty)
-            };
-
-            // Add padding as necessary
-            if t.is_struct {
-                let padding = required_padding(
-                    offset,
-                    member_offset as usize / 8,
-                    &self.type_by_id::<BtfType<'_>>(member.ty).unwrap(),
-                    packed,
-                )?;
-
-                if padding != 0 {
-                    agg_content.push(format!(r#"    pub __pad_{offset}: [u8; {padding}],"#,));
-
-                    impl_default.push(format!(
-                        r#"            __pad_{offset}: [u8::default(); {padding}]"#,
-                    ));
-                }
-
-                if let Some(ft) = self.type_by_id::<types::Array<'_>>(field_ty.type_id()) {
-                    if ft.capacity() > 32 {
-                        gen_impl_default = true
-                    }
-                }
-
-                // Rust does not implement `Default` for pointers, no matter if
-                // the pointee implements it, and it also doesn't do it for
-                // `MaybeUninit` constructs, which we use for "unsafe" types.
-                if self
-                    .type_by_id::<types::Ptr<'_>>(field_ty.type_id())
-                    .is_some()
-                    || is_unsafe(field_ty)
-                {
-                    gen_impl_default = true
-                }
-            }
-
-            match self.type_default(field_ty) {
-                Ok(mut def) => {
-                    if is_unsafe(field_ty) {
-                        def = format!("std::mem::MaybeUninit::new({def})")
-                    }
-
-                    impl_default.push(format!(
-                        r#"            {field_name}: {field_ty_str}"#,
-                        field_ty_str = def
-                    ));
-                }
-                Err(e) => {
-                    if gen_impl_default || !t.is_struct {
-                        return Err(e.context("Could not construct a necessary Default Impl"));
-                    }
-                }
-            };
-
-            // Set `offset` to end of current var
-            offset = (member_offset / 8) as usize + size_of_type(field_ty, &self.btf)?;
-
-            let field_ty_str = self.type_declaration(field_ty)?;
-            let field_ty_str = if is_unsafe(field_ty) {
-                Cow::Owned(format!("std::mem::MaybeUninit<{field_ty_str}>"))
-            } else {
-                Cow::Borrowed(field_ty_str.as_str())
-            };
-
-            agg_content.push(format!(r#"    pub {field_name}: {field_ty_str},"#));
-        }
-
-        if t.is_struct {
-            let struct_size = t.size();
-            let padding = required_padding(offset, struct_size, &t, packed)?;
-            if padding != 0 {
-                agg_content.push(format!(r#"    pub __pad_{offset}: [u8; {padding}],"#,));
-                impl_default.push(format!(
-                    r#"            __pad_{offset}: [u8::default(); {padding}]"#,
-                ));
-            }
-        }
-
-        if !gen_impl_default && t.is_struct {
-            writeln!(def, r#"#[derive(Debug, Default, Copy, Clone)]"#)?;
-        } else if t.is_struct {
-            writeln!(def, r#"#[derive(Debug, Copy, Clone)]"#)?;
-        } else {
-            writeln!(def, r#"#[derive(Copy, Clone)]"#)?;
-        }
-
-        let aggregate_type = if t.is_struct { "struct" } else { "union" };
-        let packed_repr = if packed { ", packed" } else { "" };
-
-        writeln!(def, r#"#[repr(C{packed_repr})]"#)?;
-        writeln!(
-            def,
-            r#"pub {agg_type} {name} {{"#,
-            agg_type = aggregate_type,
-            name = self.anon_types.type_name_or_anon(&t),
-        )?;
-
-        for field in agg_content {
-            writeln!(def, "{field}")?;
-        }
-        writeln!(def, "}}")?;
-
-        // if required write a Default implementation for this struct
-        if gen_impl_default {
-            writeln!(
-                def,
-                r#"impl Default for {} {{"#,
-                self.anon_types.type_name_or_anon(&t),
-            )?;
-            writeln!(def, r#"    fn default() -> Self {{"#)?;
-            writeln!(
-                def,
-                r#"        {} {{"#,
-                self.anon_types.type_name_or_anon(&t)
-            )?;
-            for impl_def in impl_default {
-                writeln!(def, r#"{impl_def},"#)?;
-            }
-            writeln!(def, r#"        }}"#)?;
-            writeln!(def, r#"    }}"#)?;
-            writeln!(def, r#"}}"#)?;
-        } else if !t.is_struct {
-            // write a Debug implementation for a union
-            writeln!(
-                def,
-                r#"impl std::fmt::Debug for {} {{"#,
-                self.anon_types.type_name_or_anon(&t),
-            )?;
-            writeln!(
-                def,
-                r#"    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{"#
-            )?;
-            writeln!(def, r#"        write!(f, "(???)")"#)?;
-            writeln!(def, r#"    }}"#)?;
-            writeln!(def, r#"}}"#)?;
-
-            // write a Default implementation for a union
-            writeln!(
-                def,
-                r#"impl Default for {} {{"#,
-                self.anon_types.type_name_or_anon(&t),
-            )?;
-            writeln!(def, r#"    fn default() -> Self {{"#)?;
-            writeln!(
-                def,
-                r#"        {} {{"#,
-                self.anon_types.type_name_or_anon(&t)
-            )?;
-            writeln!(def, r#"{},"#, impl_default[0])?;
-            writeln!(def, r#"        }}"#)?;
-            writeln!(def, r#"    }}"#)?;
-            writeln!(def, r#"}}"#)?;
-        }
-        Ok(())
-    }
-
-    fn type_definition_for_enums(&self, def: &mut String, t: types::Enum<'_>) -> Result<()> {
-        let repr_size = match t.size() {
-            1 => "8",
-            2 => "16",
-            4 => "32",
-            8 => "64",
-            16 => "128",
-            _ => bail!("Invalid enum size: {}", t.size()),
+        let mut visitor = DefinitionVisitor {
+            btf: &self.btf,
+            visited: processed,
+            anon_types: &self.anon_types,
+            definition: String::new(),
         };
-
-        let mut signed = "u";
-        for value in t.iter() {
-            if value.value < 0 {
-                signed = "i";
-                break;
-            }
-        }
-
-        writeln!(
-            def,
-            r#"#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]"#
-        )?;
-        writeln!(def, r#"#[repr({signed}{repr_size})]"#)?;
-        writeln!(
-            def,
-            r#"pub enum {name} {{"#,
-            name = self.anon_types.type_name_or_anon(&t),
-        )?;
-
-        for (i, value) in t.iter().enumerate() {
-            if i == 0 {
-                writeln!(def, r#"    #[default]"#)?;
-            }
-            writeln!(
-                def,
-                r#"    {name} = {value},"#,
-                name = value.name.unwrap().to_string_lossy(),
-                value = value.value,
-            )?;
-        }
-
-        writeln!(def, "}}")?;
-        Ok(())
-    }
-
-    fn type_definition_for_datasec<'a>(
-        &'a self,
-        def: &mut String,
-        dependent_types: &mut Vec<BtfType<'a>>,
-        t: types::DataSec<'_>,
-    ) -> Result<()> {
-        let mut sec_name = match t.name().map(|s| s.to_string_lossy()) {
-            None => bail!("Datasec name is empty"),
-            Some(s) if !s.starts_with('.') => bail!("Datasec name is invalid: {s}"),
-            Some(s) => s.into_owned(),
-        };
-        sec_name.remove(0);
-
-        writeln!(def, r#"#[derive(Debug, Copy, Clone)]"#)?;
-        writeln!(def, r#"#[repr(C)]"#)?;
-        writeln!(def, r#"pub struct {sec_name} {{"#)?;
-
-        let mut offset: u32 = 0;
-        for datasec_var in t.iter() {
-            let var = self
-                .type_by_id::<types::Var<'_>>(datasec_var.ty)
-                .ok_or_else(|| anyhow!("BTF is invalid! Datasec var does not point to a var"))?;
-
-            if var.linkage() == Linkage::Static {
-                // do not output Static Var
-                continue;
-            }
-
-            if let Some(next_ty) = next_type(*var)? {
-                dependent_types.push(next_ty);
-            }
-
-            let padding =
-                required_padding(offset as usize, datasec_var.offset as usize, &var, false)?;
-            if padding != 0 {
-                writeln!(def, r#"    __pad_{offset}: [u8; {padding}],"#)?;
-            }
-
-            // Set `offset` to end of current var
-            offset = datasec_var.offset + datasec_var.size as u32;
-
-            writeln!(
-                def,
-                r#"    pub {var_name}: {var_type},"#,
-                var_name = var.name().unwrap().to_string_lossy(),
-                var_type = self.type_declaration(*var)?
-            )?;
-        }
-
-        writeln!(def, "}}")?;
-        Ok(())
+        let () = visit_type_hierarchy(ty, &mut visitor)?;
+        Ok(visitor.definition)
     }
 }
 
-fn next_type(mut t: BtfType<'_>) -> Result<Option<BtfType<'_>>> {
+pub(crate) fn next_type(mut t: BtfType<'_>) -> Result<Option<BtfType<'_>>> {
     loop {
         match t.kind() {
             BtfKind::Struct
