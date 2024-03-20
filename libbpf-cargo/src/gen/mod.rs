@@ -1,4 +1,5 @@
 pub mod btf;
+mod visit;
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
