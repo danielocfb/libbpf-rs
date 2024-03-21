@@ -291,6 +291,7 @@ name = "libbpf-cargo"
 version = "0.23.3"
 dependencies = [
  "anyhow",
+ "btf-gen",
  "cargo_metadata",
  "clap",
  "goblin",

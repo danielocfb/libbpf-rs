@@ -42,5 +42,6 @@ tempfile = "3.3"
 clap = { version = "4.0.32", features = ["derive"] }
 
 [dev-dependencies]
+btf-gen = { path = "../btf-gen" }
 goblin = "0.6"
 vmlinux = { path = "../vmlinux" }
