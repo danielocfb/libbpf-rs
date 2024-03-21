@@ -1,0 +1,10 @@
+[package]
+name = "btf-gen"
+version = "0.0.0"
+edition = "2021"
+authors = ["Daniel Müller <deso@posteo.net>"]
+
+[dependencies]
+libbpf-rs = { version = "0.22", path = "../libbpf-rs" }
+tempfile = "3.3"
+vmlinux = { path = "../vmlinux" }
