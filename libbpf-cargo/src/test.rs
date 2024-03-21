@@ -20,6 +20,7 @@ use tempfile::NamedTempFile;
 use tempfile::TempDir;
 
 use crate::build::build;
+use crate::gen::btf::identify_struct_ops_programs;
 use crate::gen::btf::GenBtf;
 use crate::make::make;
 use crate::SkeletonBuilder;
@@ -2812,4 +2813,24 @@ double d = 12.15;
         "f64",
         btf.type_declaration(d).expect("Failed to generate d decl")
     );
+}
+
+/// XXX
+#[test]
+fn test_btf_dump_foobar() {
+    let prog_text = r#"
+#include "vmlinux.h"
+#include <bpf/bpf_helpers.h>
+
+SEC(".struct_ops")
+struct tcp_congestion_ops tcp_ca = {
+	.name = "tcp_ca",
+};
+"#;
+    let mmap = build_btf_mmap(prog_text);
+    let btf = btf_from_mmap(&mmap);
+    let struct_ops = find_type_in_btf!(btf, types::DataSec<'_>, "struct_ops", true);
+
+    let map = identify_struct_ops_programs(struct_ops, &btf).unwrap();
+    assert!(map.is_empty(), "{map:?}");
 }

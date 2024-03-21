@@ -257,6 +257,41 @@ fn escape_reserved_keyword(identifier: Cow<'_, str>) -> Cow<'_, str> {
     }
 }
 
+pub(crate) fn identify_struct_ops_programs(
+    ty: types::DataSec<'_>,
+    btf: &Btf<'_>,
+) -> Result<HashMap<String, String>> {
+    let mut relevant_types = HashMap::new();
+    for var in ty.iter() {
+        let var = btf
+            .type_by_id::<types::Var<'_>>(var.ty)
+            .ok_or_else(|| anyhow!("datasec member is not a variable"))?;
+
+        if let Some(next_ty) = next_type(*var)? {
+            if let Some(struct_ty) = btf.type_by_id::<types::Struct<'_>>(next_ty.type_id()) {
+                relevant_types.insert(next_ty.type_id(), struct_ty);
+            }
+        }
+    }
+
+    for (_ty_id, ty) in relevant_types {
+        for member in ty.iter() {
+            if let Some(ptr_ty) = btf.type_by_id::<types::Ptr<'_>>(member.ty) {
+                let ref_ty = ptr_ty.referenced_type().skip_mods_and_typedefs();
+                if matches!(
+                    ref_ty.kind(),
+                    BtfKind::Fwd | BtfKind::Func | BtfKind::FuncProto
+                ) {
+                    if let Some(name) = member.name {
+                        println!("{} {ptr_ty:?}", name.to_string_lossy());
+                    }
+                }
+            }
+        }
+    }
+    Ok(HashMap::new())
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct AnonTypes {
     /// A mapping from type to number, allowing us to assign numbers to types
