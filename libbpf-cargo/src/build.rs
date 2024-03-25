@@ -1,6 +1,4 @@
 use std::collections::HashSet;
-use std::env::consts::ARCH;
-use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
@@ -13,7 +11,6 @@ use anyhow::Context;
 use anyhow::Result;
 use regex::Regex;
 use semver::Version;
-use tempfile::tempdir;
 
 use crate::metadata;
 use crate::metadata::UnprocessedObj;
@@ -117,122 +114,7 @@ fn check_clang(debug: bool, clang: &Path, skip_version_checks: bool) -> Result<(
     Ok(())
 }
 
-/// Strip DWARF information from the provided BPF object file.
-///
-/// We rely on the `libbpf` linker here, which removes debug information as a
-/// side-effect.
-fn strip_dwarf_info(file: &Path) -> Result<()> {
-    let mut temp_file = file.as_os_str().to_os_string();
-    temp_file.push(".tmp");
-
-    fs::rename(file, &temp_file).context("Failed to rename compiled BPF object file")?;
-
-    let mut linker =
-        libbpf_rs::Linker::new(file).context("Failed to instantiate libbpf object file linker")?;
-    linker
-        .add_file(temp_file)
-        .context("Failed to add object file to BPF linker")?;
-    linker.link().context("Failed to link object file")?;
-    Ok(())
-}
-
-/// Concatenate a command and its arguments into a single string.
-fn concat_command<C, A, S>(command: C, args: A) -> OsString
-where
-    C: AsRef<OsStr>,
-    A: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    args.into_iter()
-        .fold(command.as_ref().to_os_string(), |mut cmd, arg| {
-            cmd.push(OsStr::new(" "));
-            cmd.push(arg.as_ref());
-            cmd
-        })
-}
-
-/// Format a command with the given list of arguments as a string.
-fn format_command(command: &Command) -> String {
-    let prog = command.get_program();
-    let args = command.get_args();
-
-    concat_command(prog, args).to_string_lossy().to_string()
-}
-
-/// We're essentially going to run:
-///
-///   clang -g -O2 -target bpf -c -D__TARGET_ARCH_$(ARCH) runqslower.bpf.c -o runqslower.bpf.o
-///
-/// for each prog.
-fn compile_one(
-    debug: bool,
-    source: &Path,
-    out: &Path,
-    clang: &Path,
-    clang_args: &[OsString],
-) -> Result<()> {
-    if debug {
-        println!("Building {}", source.display());
-    }
-
-    let mut cmd = Command::new(clang.as_os_str());
-    cmd.args(clang_args);
-
-    if !clang_args
-        .iter()
-        .any(|arg| arg.to_string_lossy().contains("__TARGET_ARCH_"))
-    {
-        // We may end up being invoked by a build script, in which case
-        // `CARGO_CFG_TARGET_ARCH` would represent the target architecture.
-        let arch = option_env!("CARGO_CFG_TARGET_ARCH").unwrap_or(ARCH);
-        let arch = match arch {
-            "x86_64" => "x86",
-            "aarch64" => "arm64",
-            "powerpc64" => "powerpc",
-            "s390x" => "s390",
-            x => x,
-        };
-        cmd.arg(format!("-D__TARGET_ARCH_{arch}"));
-    }
-
-    cmd.arg("-g")
-        .arg("-O2")
-        .arg("-target")
-        .arg("bpf")
-        .arg("-c")
-        .arg(source.as_os_str())
-        .arg("-o")
-        .arg(out);
-
-    let output = cmd.output().context("Failed to execute clang")?;
-    if !output.status.success() {
-        let err = Err(anyhow!(String::from_utf8_lossy(&output.stderr).to_string()))
-            .with_context(|| {
-                format!(
-                    "Command `{}` failed ({})",
-                    format_command(&cmd),
-                    output.status
-                )
-            })
-            .with_context(|| {
-                format!(
-                    "Failed to compile {} from {}",
-                    out.display(),
-                    source.display()
-                )
-            });
-        return err;
-    }
-
-    // Compilation with clang may contain DWARF information that references
-    // system specific and temporary paths. That can render our generated
-    // skeletons unstable, potentially rendering them unsuitable for inclusion
-    // in version control systems. So strip this information.
-    strip_dwarf_info(out).with_context(|| format!("Failed to strip object file {}", out.display()))
-}
-
 fn compile(
-    debug: bool,
     objs: &[UnprocessedObj],
     clang: &Path,
     mut clang_args: Vec<OsString>,
@@ -258,7 +140,7 @@ fn compile(
         let mut dest_path = obj.out.to_path_buf();
         dest_path.push(&dest_name);
         fs::create_dir_all(&obj.out)?;
-        compile_one(debug, &obj.path, &dest_path, clang, &clang_args)?;
+        btf_gen::compile_bpf(&obj.path, &dest_path, Some(clang), &clang_args)?;
     }
 
     Ok(())
@@ -296,8 +178,7 @@ pub fn build(
     let clang = extract_clang_or_default(clang);
     check_clang(debug, &clang, skip_clang_version_checks)
         .with_context(|| anyhow!("{} is invalid", clang.display()))?;
-    compile(debug, &to_compile, &clang, clang_args, &target_dir)
-        .context("Failed to compile progs")?;
+    compile(&to_compile, &clang, clang_args, &target_dir).context("Failed to compile progs")?;
 
     Ok(())
 }
@@ -310,23 +191,11 @@ pub fn build_single(
     out: &Path,
     clang: Option<&PathBuf>,
     skip_clang_version_checks: bool,
-    mut clang_args: Vec<OsString>,
+    clang_args: Vec<OsString>,
 ) -> Result<()> {
     let clang = extract_clang_or_default(clang);
-    check_clang(debug, &clang, skip_clang_version_checks)?;
-    let header_parent_dir = tempdir()?;
-    let header_dir = extract_libbpf_headers_to_disk(header_parent_dir.path())?;
-
-    if let Some(dir) = header_dir {
-        clang_args.push(OsString::from("-I"));
-        clang_args.push(dir.into_os_string());
-    }
-
-    // Explicitly disable stack protector logic, which doesn't work with
-    // BPF. See https://lkml.org/lkml/2020/2/21/1000.
-    clang_args.push(OsString::from("-fno-stack-protector"));
-
-    compile_one(debug, source, out, &clang, &clang_args)?;
+    let () = check_clang(debug, &clang, skip_clang_version_checks)?;
+    let () = btf_gen::compile_bpf(source, out, Some(clang).as_deref(), clang_args)?;
 
     Ok(())
 }

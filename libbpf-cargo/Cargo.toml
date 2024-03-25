@@ -31,6 +31,7 @@ default = ["libbpf-rs/default"]
 
 [dependencies]
 anyhow = "1.0.1"
+btf-gen = { path = "../btf-gen" }
 cargo_metadata = "0.15.0"
 libbpf-rs = { version = "0.23", default-features = false, path = "../libbpf-rs" }
 memmap2 = "0.5"
@@ -42,6 +43,5 @@ tempfile = "3.3"
 clap = { version = "4.0.32", features = ["derive"] }
 
 [dev-dependencies]
-btf-gen = { path = "../btf-gen" }
 goblin = "0.6"
 vmlinux = { path = "../vmlinux" }
