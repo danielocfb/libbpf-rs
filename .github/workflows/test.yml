@@ -128,60 +128,30 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: RUSTFLAGS="$RUSTFLAGS -L /usr/lib/x86_64-linux-gnu" cargo build --locked --package capable --features=static
-  build-aarch64:
-    name: Build for aarch64
+  build-cross:
+    name: Cross-compile [${{ matrix.target }}]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [
+          aarch64-linux-android,
+          aarch64-unknown-linux-gnu
+          arm-linux-androideabi,
+          armv7-linux-androideabi,
+          armv7-unknown-linux-gnueabihf
+          x86_64-unknown-linux-musl,
+        ]
     steps:
       - uses: actions/checkout@v4
-      - name: Add apt sources for arm64
-        run: |
-          dpkg --add-architecture arm64
-          release=$(. /etc/os-release && echo "$UBUNTU_CODENAME")
-          sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
-          printf 'deb [arch=arm64] http://ports.ubuntu.com/ %s main restricted\n' \
-              $release $release-updates $release-security \
-              >> /etc/apt/sources.list
-        shell: sudo sh -e {0}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/setup-cross-toolchain-action@v1
         with:
-          targets: aarch64-unknown-linux-gnu
+          target: ${{ matrix.target }}
       - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libelf-dev:arm64 zlib1g-dev:arm64 gcc-aarch64-linux-gnu
+        run: sudo apt-get install -y libelf-dev
       - uses: Swatinem/rust-cache@v2
-      - name: Build
-        env:
-          CARGO_BUILD_TARGET: aarch64-unknown-linux-gnu
-          RUSTFLAGS: -C linker=/usr/bin/aarch64-linux-gnu-gcc
-        run: cargo build --lib
-  build-armhf:
-    name: Build for aarch32
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Add apt sources for armhf
-        run: |
-          dpkg --add-architecture armhf
-          release=$(. /etc/os-release && echo "$UBUNTU_CODENAME")
-          sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
-          printf 'deb [arch=armhf] http://ports.ubuntu.com/ %s main restricted\n' \
-              $release $release-updates $release-security \
-              >> /etc/apt/sources.list
-        shell: sudo sh -e {0}
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: armv7-unknown-linux-gnueabihf
-      - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libelf-dev:armhf zlib1g-dev:armhf gcc-arm-linux-gnueabihf
-      - uses: Swatinem/rust-cache@v2
-      - name: Build
-        env:
-          CARGO_BUILD_TARGET: armv7-unknown-linux-gnueabihf
-          RUSTFLAGS: -C linker=/usr/bin/armhf-linux-gnu-gcc
-        run: cargo build --lib
+      - run: |
+          cargo build --lib
   clippy:
     name: Lint with clippy
     runs-on: ubuntu-latest
