@@ -29,6 +29,7 @@ use anyhow::Context;
 use anyhow::Result;
 
 use libbpf_rs::btf::types;
+use libbpf_rs::btf::TypeId;
 use libbpf_rs::libbpf_sys;
 use libbpf_rs::Btf;
 
@@ -460,7 +461,7 @@ fn gen_skel_prog_defs(
     Ok(())
 }
 
-fn gen_skel_datasec_types(skel: &mut String, object: &BpfObj) -> Result<()> {
+fn gen_skel_datasec_types(skel: &mut String, object: &BpfObj, processed: &mut HashSet<TypeId>) -> Result<()> {
     let btf = if let Some(btf) = Btf::from_bpf_object(object)? {
         btf
     } else {
@@ -468,12 +469,12 @@ fn gen_skel_datasec_types(skel: &mut String, object: &BpfObj) -> Result<()> {
     };
     let btf = GenBtf::from(btf);
 
-    let mut processed = HashSet::new();
     for ty in btf.type_by_kind::<types::DataSec<'_>>() {
         let name = match ty.name() {
             Some(s) => s.to_str()?,
             None => "",
         };
+
 
         if matches!(
             canonicalize_internal_map_name(name),
@@ -482,10 +483,59 @@ fn gen_skel_datasec_types(skel: &mut String, object: &BpfObj) -> Result<()> {
             continue;
         };
 
-        let sec_def = btf.type_definition(*ty, &mut processed)?;
+        let sec_def = btf.type_definition(*ty, processed)?;
         write!(skel, "{sec_def}")?;
     }
     Ok(())
+}
+
+fn gen_skel_map_types(skel: &mut String, object: &mut BpfObj, processed: &mut HashSet<TypeId>) -> Result<()> {
+    let btf = if let Some(btf) = Btf::from_bpf_object(object)? {
+        btf
+    } else {
+        return Ok(());
+    };
+    let btf = GenBtf::from(btf);
+
+    for map in MapIter::new(object.as_ptr()) {
+        let key_id = unsafe { libbpf_sys::bpf_map__btf_key_type_id(map) };
+        let val_id = unsafe { libbpf_sys::bpf_map__btf_value_type_id(map) };
+
+        let key_type = btf.type_by_id(TypeId::from(key_id)).with_context(|| format!("failed to look up BTF map key type with ID `{key_id}`"))?;
+        let val_type = btf.type_by_id(TypeId::from(val_id)).with_context(|| format!("failed to look up BTF map value type with ID `{val_id}`"))?;
+
+        let sec_def = btf.type_definition(key_type, processed)?;
+        write!(skel, "{sec_def}")?;
+        let sec_def = btf.type_definition(val_type, processed)?;
+        write!(skel, "{sec_def}")?;
+    }
+    Ok(())
+
+    //let btf = if let Some(btf) = Btf::from_bpf_object(object)? {
+    //    btf
+    //} else {
+    //    return Ok(());
+    //};
+    //let btf = GenBtf::from(btf);
+
+    //let mut processed = HashSet::new();
+    //for ty in btf.type_by_kind::<types::DataSec<'_>>() {
+    //    let name = match ty.name() {
+    //        Some(s) => s.to_str()?,
+    //        None => "",
+    //    };
+
+    //    if matches!(
+    //        canonicalize_internal_map_name(name),
+    //        None | Some(InternalMapType::StructOps)
+    //    ) {
+    //        continue;
+    //    };
+
+    //    let sec_def = btf.type_definition(*ty, &mut processed)?;
+    //    write!(skel, "{sec_def}")?;
+    //}
+    //Ok(())
 }
 
 fn gen_skel_struct_ops_types(skel: &mut String, object: &BpfObj) -> Result<()> {
@@ -892,7 +942,9 @@ fn gen_skel_contents(_debug: bool, raw_obj_name: &str, obj_file_path: &Path) -> 
             "#
     )?;
 
-    gen_skel_datasec_types(&mut skel, &object)?;
+    let mut processed = HashSet::new();
+    gen_skel_datasec_types(&mut skel, &object, &mut processed)?;
+    gen_skel_map_types(&mut skel, &mut object, &mut processed)?;
     gen_skel_struct_ops_types(&mut skel, &object)?;
     writeln!(skel, "}}")?;
 

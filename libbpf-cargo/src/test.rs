@@ -771,10 +771,16 @@ fn test_skeleton_builder_basic() {
         #include "vmlinux.h"
         #include <bpf/bpf_helpers.h>
 
+        struct unique_key {{
+            int cap;
+            u32 tgid;
+            u64 cgroupid;
+        }};
+
         struct {{
                 __uint(type, BPF_MAP_TYPE_HASH);
                 __uint(max_entries, 1024);
-                __type(key, u32);
+                __type(key, struct unique_key);
                 __type(value, u64);
         }} mymap SEC(".maps");
 
@@ -857,6 +863,8 @@ fn test_skeleton_builder_basic() {
 
             // Check that Option<Link> field is generated
             let _mylink = skel.links.this_is_my_prog.unwrap();
+
+            let _key = prog_types::unique_key::default();
         }}
         "#,
         skel_path = skel.path().display(),
