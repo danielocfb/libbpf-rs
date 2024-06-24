@@ -1611,6 +1611,12 @@ fn test_object_usdt() {
 #[tag(root)]
 #[test]
 fn test_object_usdt_cookie() {
+    #[inline(never)]
+    fn action() {
+        // Define a USDT probe point and exercise it as we are attaching to self.
+        probe!(test_provider, test_function2, 1);
+    }
+
     bump_rlimit_mlock();
 
     let cookie_val = 1337u16;
@@ -1625,7 +1631,7 @@ fn test_object_usdt_cookie() {
             unsafe { libc::getpid() },
             &path,
             "test_provider",
-            "test_function",
+            "test_function2",
             UsdtOpts {
                 cookie: cookie_val.into(),
                 ..UsdtOpts::default()
@@ -1634,10 +1640,6 @@ fn test_object_usdt_cookie() {
         .expect("Failed to attach prog");
 
     let map = obj.map("ringbuf").expect("Failed to get ringbuf map");
-    let action = || {
-        // Define a USDT probe point and exercise it as we are attaching to self.
-        probe!(test_provider, test_function, 1);
-    };
     let result = with_ringbuffer(map, action);
 
     assert_eq!(result, cookie_val.into());
