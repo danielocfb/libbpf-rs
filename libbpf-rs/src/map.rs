@@ -50,7 +50,7 @@ impl OpenMap {
     ///
     /// # Safety
     /// The pointer must point to an opened but not loaded map.
-    pub(crate) unsafe fn new(ptr: NonNull<libbpf_sys::bpf_map>) -> Self {
+    pub unsafe fn new(ptr: NonNull<libbpf_sys::bpf_map>) -> Self {
         Self { ptr }
     }
 
@@ -191,6 +191,12 @@ impl OpenMap {
         let reuse_result = self.reuse_fd(fd.as_fd());
 
         reuse_result
+    }
+
+    /// Convert the object into the underlying [`libbpf_sys::bpf_map`].
+    pub fn into_libbpf_object(self) -> NonNull<libbpf_sys::bpf_map> {
+        let Self { ptr } = self;
+        ptr
     }
 }
 
@@ -660,7 +666,7 @@ impl Map {
     /// # Safety
     ///
     /// The pointer must point to a loaded map.
-    pub(crate) unsafe fn new(ptr: NonNull<libbpf_sys::bpf_map>) -> Self {
+    pub unsafe fn new(ptr: NonNull<libbpf_sys::bpf_map>) -> Self {
         //debug_assert!(
         //    map_fd(ptr).is_some(),
         //    "provided BPF map does not have file descriptor"

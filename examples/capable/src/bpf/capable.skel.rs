@@ -39,6 +39,46 @@ mod imp {
         pub obj_builder: libbpf_rs::ObjectBuilder,
     }
 
+    impl CapableSkelBuilder {
+        fn retrieve_maps(
+            obj: std::ptr::NonNull<libbpf_sys::bpf_object>,
+        ) -> libbpf_rs::Result<std::collections::HashMap<std::string::String, libbpf_rs::OpenMap>>
+        {
+            let mut maps = std::collections::HashMap::new();
+            let mut map = std::ptr::null_mut();
+            loop {
+                // Get the pointer to the next BPF map
+                let map_ptr = {
+                    let next_ptr = unsafe { libbpf_sys::bpf_object__next_map(obj.as_ptr(), map) };
+                    match std::ptr::NonNull::new(next_ptr) {
+                        Some(map_ptr) => map_ptr,
+                        None => break,
+                    }
+                };
+
+                let map_obj = unsafe { libbpf_rs::OpenMap::new(map_ptr) };
+
+                // Add the map to the hashmap
+                maps.insert(
+                    map_obj
+                        .name()
+                        .to_str()
+                        .ok_or_else(|| {
+                            libbpf_rs::Error::from(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "map has invalid name",
+                            ))
+                        })?
+                        .to_string(),
+                    map_obj,
+                );
+                map = map_ptr.as_ptr();
+            }
+
+            Ok(maps)
+        }
+    }
+
     impl<'a> SkelBuilder<'a> for CapableSkelBuilder {
         type Output = OpenCapableSkel<'a>;
         fn open(self) -> libbpf_rs::Result<OpenCapableSkel<'a>> {
@@ -59,10 +99,12 @@ mod imp {
             }
 
             let obj = unsafe { libbpf_rs::OpenObject::from_ptr(skel_config.object_ptr())? };
+            let maps = Self::retrieve_maps(libbpf_rs::AsRawLibbpf::as_libbpf_object(&obj))?;
 
             #[allow(unused_mut)]
             let mut skel = OpenCapableSkel {
                 obj,
+                maps,
                 // SAFETY: Our `struct_ops` type contains only pointers,
                 //         which are allowed to be NULL.
                 // TODO: Generate and use a `Default` representation
@@ -83,54 +125,54 @@ mod imp {
     }
 
     pub struct OpenCapableMapsMut<'a> {
-        inner: &'a mut libbpf_rs::OpenObject,
+        inner: &'a mut std::collections::HashMap<std::string::String, libbpf_rs::OpenMap>,
     }
 
     impl OpenCapableMapsMut<'_> {
         pub fn events(&mut self) -> &mut libbpf_rs::OpenMap {
-            self.inner.map_mut("events").unwrap()
+            self.inner.get_mut("events").unwrap()
         }
 
         pub fn seen(&mut self) -> &mut libbpf_rs::OpenMap {
-            self.inner.map_mut("seen").unwrap()
+            self.inner.get_mut("seen").unwrap()
         }
 
         pub fn rodata(&mut self) -> &mut libbpf_rs::OpenMap {
-            self.inner.map_mut("capable_.rodata").unwrap()
+            self.inner.get_mut("capable_.rodata").unwrap()
         }
 
         pub fn bss(&mut self) -> &mut libbpf_rs::OpenMap {
-            self.inner.map_mut("capable_.bss").unwrap()
+            self.inner.get_mut("capable_.bss").unwrap()
         }
 
         pub fn kconfig(&mut self) -> &mut libbpf_rs::OpenMap {
-            self.inner.map_mut("capable.kconfig").unwrap()
+            self.inner.get_mut("capable.kconfig").unwrap()
         }
     }
 
     pub struct OpenCapableMaps<'a> {
-        inner: &'a libbpf_rs::OpenObject,
+        inner: &'a std::collections::HashMap<std::string::String, libbpf_rs::OpenMap>,
     }
 
     impl OpenCapableMaps<'_> {
         pub fn events(&self) -> &libbpf_rs::OpenMap {
-            self.inner.map("events").unwrap()
+            self.inner.get("events").unwrap()
         }
 
         pub fn seen(&self) -> &libbpf_rs::OpenMap {
-            self.inner.map("seen").unwrap()
+            self.inner.get("seen").unwrap()
         }
 
         pub fn rodata(&self) -> &libbpf_rs::OpenMap {
-            self.inner.map("capable_.rodata").unwrap()
+            self.inner.get("capable_.rodata").unwrap()
         }
 
         pub fn bss(&self) -> &libbpf_rs::OpenMap {
-            self.inner.map("capable_.bss").unwrap()
+            self.inner.get("capable_.bss").unwrap()
         }
 
         pub fn kconfig(&self) -> &libbpf_rs::OpenMap {
-            self.inner.map("capable.kconfig").unwrap()
+            self.inner.get("capable.kconfig").unwrap()
         }
     }
 
@@ -215,10 +257,18 @@ mod imp {
         pub struct struct_ops {}
 
         impl struct_ops {}
+        #[derive(Debug, Default, Copy, Clone)]
+        #[repr(C)]
+        pub struct unique_key {
+            pub cap: i32,
+            pub tgid: u32,
+            pub cgroupid: u64,
+        }
     }
 
     pub struct OpenCapableSkel<'a> {
         pub obj: libbpf_rs::OpenObject,
+        maps: std::collections::HashMap<std::string::String, libbpf_rs::OpenMap>,
         pub struct_ops: capable_types::struct_ops,
         skel_config: libbpf_rs::__internal_skel::ObjectSkeletonConfig<'a>,
     }
@@ -232,9 +282,20 @@ mod imp {
             }
 
             let obj = unsafe { libbpf_rs::Object::from_ptr(self.obj.take_ptr())? };
+            let maps = self
+                .maps
+                .into_iter()
+                .map(|(k, v)| {
+                    // SAFETY: The `bpf_map` has been validated before and has
+                    //         been loaded.
+                    let v = unsafe { libbpf_rs::Map::new(v.into_libbpf_object()) }?;
+                    Ok((k, v))
+                })
+                .collect::<libbpf_rs::Result<_, libbpf_rs::Error>>()?;
 
             Ok(CapableSkel {
                 obj,
+                maps,
                 struct_ops: self.struct_ops,
                 skel_config: self.skel_config,
                 links: CapableLinks::default(),
@@ -262,12 +323,12 @@ mod imp {
 
         pub fn maps_mut(&mut self) -> OpenCapableMapsMut<'_> {
             OpenCapableMapsMut {
-                inner: &mut self.obj,
+                inner: &mut self.maps,
             }
         }
 
         pub fn maps(&self) -> OpenCapableMaps<'_> {
-            OpenCapableMaps { inner: &self.obj }
+            OpenCapableMaps { inner: &self.maps }
         }
 
         pub fn rodata_raw(&self) -> *const capable_types::rodata {
@@ -338,54 +399,54 @@ mod imp {
     }
 
     pub struct CapableMapsMut<'a> {
-        inner: &'a mut libbpf_rs::Object,
+        inner: &'a mut std::collections::HashMap<std::string::String, libbpf_rs::Map>,
     }
 
     impl CapableMapsMut<'_> {
         pub fn events(&mut self) -> &mut libbpf_rs::Map {
-            self.inner.map_mut("events").unwrap()
+            self.inner.get_mut("events").unwrap()
         }
 
         pub fn seen(&mut self) -> &mut libbpf_rs::Map {
-            self.inner.map_mut("seen").unwrap()
+            self.inner.get_mut("seen").unwrap()
         }
 
         pub fn rodata(&mut self) -> &mut libbpf_rs::Map {
-            self.inner.map_mut("capable_.rodata").unwrap()
+            self.inner.get_mut("capable_.rodata").unwrap()
         }
 
         pub fn bss(&mut self) -> &mut libbpf_rs::Map {
-            self.inner.map_mut("capable_.bss").unwrap()
+            self.inner.get_mut("capable_.bss").unwrap()
         }
 
         pub fn kconfig(&mut self) -> &mut libbpf_rs::Map {
-            self.inner.map_mut("capable.kconfig").unwrap()
+            self.inner.get_mut("capable.kconfig").unwrap()
         }
     }
 
     pub struct CapableMaps<'a> {
-        inner: &'a libbpf_rs::Object,
+        inner: &'a std::collections::HashMap<std::string::String, libbpf_rs::Map>,
     }
 
     impl CapableMaps<'_> {
         pub fn events(&self) -> &libbpf_rs::Map {
-            self.inner.map("events").unwrap()
+            self.inner.get("events").unwrap()
         }
 
         pub fn seen(&self) -> &libbpf_rs::Map {
-            self.inner.map("seen").unwrap()
+            self.inner.get("seen").unwrap()
         }
 
         pub fn rodata(&self) -> &libbpf_rs::Map {
-            self.inner.map("capable_.rodata").unwrap()
+            self.inner.get("capable_.rodata").unwrap()
         }
 
         pub fn bss(&self) -> &libbpf_rs::Map {
-            self.inner.map("capable_.bss").unwrap()
+            self.inner.get("capable_.bss").unwrap()
         }
 
         pub fn kconfig(&self) -> &libbpf_rs::Map {
-            self.inner.map("capable.kconfig").unwrap()
+            self.inner.get("capable.kconfig").unwrap()
         }
     }
 
@@ -416,6 +477,7 @@ mod imp {
 
     pub struct CapableSkel<'a> {
         pub obj: libbpf_rs::Object,
+        maps: std::collections::HashMap<std::string::String, libbpf_rs::Map>,
         struct_ops: capable_types::struct_ops,
         skel_config: libbpf_rs::__internal_skel::ObjectSkeletonConfig<'a>,
         pub links: CapableLinks,
@@ -460,12 +522,12 @@ mod imp {
 
         pub fn maps_mut(&mut self) -> CapableMapsMut<'_> {
             CapableMapsMut {
-                inner: &mut self.obj,
+                inner: &mut self.maps,
             }
         }
 
         pub fn maps(&self) -> CapableMaps<'_> {
-            CapableMaps { inner: &self.obj }
+            CapableMaps { inner: &self.maps }
         }
 
         pub fn struct_ops_raw(&self) -> *const capable_types::struct_ops {

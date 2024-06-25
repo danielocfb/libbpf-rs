@@ -285,21 +285,21 @@ fn gen_skel_map_defs(skel: &mut String, object: &Object, obj_name: &str, open: b
         }
 
         let (struct_suffix, mut_prefix, map_fn) = if mutable {
-            ("Mut", "mut ", "map_mut")
+            ("Mut", "mut ", "get_mut")
         } else {
-            ("", "", "map")
+            ("", "", "get")
         };
 
         let (struct_name, inner_ty, return_ty) = if open {
             (
                 format!("Open{obj_name}Maps{struct_suffix}"),
-                "libbpf_rs::OpenObject",
+                "std::collections::HashMap<std::string::String, libbpf_rs::OpenMap>",
                 "libbpf_rs::OpenMap",
             )
         } else {
             (
                 format!("{obj_name}Maps{struct_suffix}"),
-                "libbpf_rs::Object",
+                "std::collections::HashMap<std::string::String, libbpf_rs::Map>",
                 "libbpf_rs::Map",
             )
         };
@@ -527,7 +527,7 @@ fn gen_skel_map_getters(
             r#"
             pub fn {map_fn}(&{mut_prefix}self) -> {return_ty}<'_> {{
                 {return_ty} {{
-                    inner: &{mut_prefix}self.obj,
+                    inner: &{mut_prefix}self.maps,
                 }}
             }}
             "#,
@@ -830,6 +830,43 @@ fn gen_skel_contents(_debug: bool, raw_obj_name: &str, obj_file_path: &Path) -> 
             pub obj_builder: libbpf_rs::ObjectBuilder,
         }}
 
+        impl {name}SkelBuilder {{
+            fn retrieve_maps(obj: std::ptr::NonNull<libbpf_sys::bpf_object>) -> libbpf_rs::Result<std::collections::HashMap<std::string::String, libbpf_rs::OpenMap>> {{
+                let mut maps = std::collections::HashMap::new();
+                let mut map = std::ptr::null_mut();
+                loop {{
+                    // Get the pointer to the next BPF map
+                    let map_ptr = {{
+                        let next_ptr = unsafe {{ libbpf_sys::bpf_object__next_map(obj.as_ptr(), map) }};
+                        match std::ptr::NonNull::new(next_ptr) {{
+                            Some(map_ptr) => map_ptr,
+                            None => break,
+                        }}
+                    }};
+
+                    let map_obj = unsafe {{ libbpf_rs::OpenMap::new(map_ptr) }};
+
+                    // Add the map to the hashmap
+                    maps.insert(
+                        map_obj
+                            .name()
+                            .to_str()
+                            .ok_or_else(|| {{
+                                libbpf_rs::Error::from(std::io::Error::new(
+                                    std::io::ErrorKind::InvalidData,
+                                    "map has invalid name",
+                                ))
+                            }})?
+                            .to_string(),
+                        map_obj,
+                    );
+                    map = map_ptr.as_ptr();
+                }}
+
+                Ok(maps)
+            }}
+        }}
+
         impl<'a> SkelBuilder<'a> for {name}SkelBuilder {{
             type Output = Open{name}Skel<'a>;
             fn open(self) -> libbpf_rs::Result<Open{name}Skel<'a>> {{
@@ -846,10 +883,12 @@ fn gen_skel_contents(_debug: bool, raw_obj_name: &str, obj_file_path: &Path) -> 
                 }}
 
                 let obj = unsafe {{ libbpf_rs::OpenObject::from_ptr(skel_config.object_ptr())? }};
+                let maps = Self::retrieve_maps(libbpf_rs::AsRawLibbpf::as_libbpf_object(&obj))?;
 
                 #[allow(unused_mut)]
                 let mut skel = Open{name}Skel {{
                     obj,
+                    maps,
                     // SAFETY: Our `struct_ops` type contains only pointers,
                     //         which are allowed to be NULL.
                     // TODO: Generate and use a `Default` representation
@@ -896,6 +935,7 @@ fn gen_skel_contents(_debug: bool, raw_obj_name: &str, obj_file_path: &Path) -> 
         r#"
         pub struct Open{name}Skel<'a> {{
             pub obj: libbpf_rs::OpenObject,
+            maps: std::collections::HashMap<std::string::String, libbpf_rs::OpenMap>,
             pub struct_ops: {raw_obj_name}_types::struct_ops,
             skel_config: libbpf_rs::__internal_skel::ObjectSkeletonConfig<'a>,
         }}
@@ -909,9 +949,16 @@ fn gen_skel_contents(_debug: bool, raw_obj_name: &str, obj_file_path: &Path) -> 
                 }}
 
                 let obj = unsafe {{ libbpf_rs::Object::from_ptr(self.obj.take_ptr())? }};
+                let maps = self.maps.into_iter().map(|(k, v)| {{
+                    // SAFETY: The `bpf_map` has been validated before and has
+                    //         been loaded.
+                    let v = unsafe {{ libbpf_rs::Map::new(v.into_libbpf_object()) }};
+                    Ok((k, v))
+                }}).collect::<libbpf_rs::Result<_, libbpf_rs::Error>>()?;
 
                 Ok({name}Skel {{
                     obj,
+                    maps,
                     struct_ops: self.struct_ops,
                     skel_config: self.skel_config,
                     {links}
@@ -937,6 +984,7 @@ fn gen_skel_contents(_debug: bool, raw_obj_name: &str, obj_file_path: &Path) -> 
     writeln!(skel, "impl Open{name}Skel<'_> {{", name = &obj_name)?;
 
     gen_skel_prog_getters(&mut skel, &object, &obj_name, true)?;
+    // TODO: Remove.
     gen_skel_map_getters(&mut skel, &object, &obj_name, true)?;
     gen_skel_datasec_getters(&mut skel, &object, raw_obj_name, false)?;
     writeln!(skel, "}}")?;
@@ -951,6 +999,7 @@ fn gen_skel_contents(_debug: bool, raw_obj_name: &str, obj_file_path: &Path) -> 
         r#"
         pub struct {name}Skel<'a> {{
             pub obj: libbpf_rs::Object,
+            maps: std::collections::HashMap<std::string::String, libbpf_rs::Map>,
             struct_ops: {raw_obj_name}_types::struct_ops,
             skel_config: libbpf_rs::__internal_skel::ObjectSkeletonConfig<'a>,
         "#,
@@ -981,6 +1030,7 @@ fn gen_skel_contents(_debug: bool, raw_obj_name: &str, obj_file_path: &Path) -> 
 
     write!(skel, "impl {name}Skel<'_> {{", name = &obj_name)?;
     gen_skel_prog_getters(&mut skel, &object, &obj_name, false)?;
+    // TODO: Remove.
     gen_skel_map_getters(&mut skel, &object, &obj_name, false)?;
     gen_skel_struct_ops_getters(&mut skel, &object, raw_obj_name)?;
     gen_skel_datasec_getters(&mut skel, &object, raw_obj_name, true)?;
