@@ -208,7 +208,6 @@ impl ObjectBuilder {
 #[derive(Debug)]
 pub struct OpenObject {
     ptr: NonNull<libbpf_sys::bpf_object>,
-    maps: HashMap<String, OpenMap>,
     progs: HashMap<String, OpenProgram>,
 }
 
@@ -222,35 +221,8 @@ impl OpenObject {
     unsafe fn new(ptr: NonNull<libbpf_sys::bpf_object>) -> Result<Self> {
         let mut obj = OpenObject {
             ptr,
-            maps: HashMap::new(),
             progs: HashMap::new(),
         };
-
-        // Populate obj.maps
-        let mut map: *mut libbpf_sys::bpf_map = ptr::null_mut();
-        loop {
-            // Get the pointer to the next BPF map
-            let map_ptr = {
-                let next_ptr = unsafe { libbpf_sys::bpf_object__next_map(obj.ptr.as_ptr(), map) };
-                match NonNull::new(next_ptr) {
-                    Some(map_ptr) => map_ptr,
-                    None => break,
-                }
-            };
-
-            let map_obj = unsafe { OpenMap::new(map_ptr) };
-
-            // Add the map to the hashmap
-            obj.maps.insert(
-                map_obj
-                    .name()
-                    .to_str()
-                    .ok_or_else(|| Error::with_invalid_data("map has invalid name"))?
-                    .to_string(),
-                map_obj,
-            );
-            map = map_ptr.as_ptr();
-        }
 
         // Populate obj.progs
         let mut prog: *mut libbpf_sys::bpf_program = ptr::null_mut();
@@ -302,8 +274,7 @@ impl OpenObject {
             // manually free the internal state.
             // using destructuring we make sure we'll get a compiler error if anything in
             // Self changes, which will alert us to change this function as well
-            let Self { ptr, maps, progs } = &mut self;
-            mem::take(maps);
+            let Self { ptr, progs } = &mut self;
             mem::take(progs);
             *ptr
         };
@@ -325,30 +296,6 @@ impl OpenObject {
                 .to_str()
                 .map_err(Error::with_invalid_data)
         }
-    }
-
-    /// Get a reference to `OpenMap` with the name `name`, if one exists.
-    pub fn map<T: AsRef<str>>(&self, name: T) -> Option<&OpenMap> {
-        self.maps.get(name.as_ref())
-    }
-
-    /// Get a mutable reference to `OpenMap` with the name `name`, if one exists.
-    pub fn map_mut<T: AsRef<str>>(&mut self, name: T) -> Option<&mut OpenMap> {
-        self.maps.get_mut(name.as_ref())
-    }
-
-    /// Get an iterator over references to all `OpenMap`s.
-    /// Note that this will include automatically generated .data, .rodata, .bss, and
-    /// .kconfig maps.
-    pub fn maps_iter(&self) -> impl Iterator<Item = &OpenMap> {
-        self.maps.values()
-    }
-
-    /// Get an iterator over mutable references to all `OpenMap`s.
-    /// Note that this will include automatically generated .data, .rodata, .bss, and
-    /// .kconfig maps.
-    pub fn maps_iter_mut(&mut self) -> impl Iterator<Item = &mut OpenMap> {
-        self.maps.values_mut()
     }
 
     /// Retrieve an iterator over all BPF maps in the object.
