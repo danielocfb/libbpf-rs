@@ -288,7 +288,7 @@ mod imp {
                 .map(|(k, v)| {
                     // SAFETY: The `bpf_map` has been validated before and has
                     //         been loaded.
-                    let v = unsafe { libbpf_rs::Map::new(v.into_libbpf_object()) }?;
+                    let v = unsafe { libbpf_rs::Map::new(v.into_libbpf_object()) };
                     Ok((k, v))
                 })
                 .collect::<libbpf_rs::Result<_, libbpf_rs::Error>>()?;
