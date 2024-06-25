@@ -120,6 +120,8 @@ pub use crate::object::AsRawLibbpf;
 pub use crate::object::Object;
 pub use crate::object::ObjectBuilder;
 pub use crate::object::OpenObject;
+pub use crate::object::MapIter;
+pub use crate::object::ProgIter;
 pub use crate::perf_buffer::PerfBuffer;
 pub use crate::perf_buffer::PerfBufferBuilder;
 pub use crate::print::get_print;
