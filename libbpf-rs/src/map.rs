@@ -6,6 +6,7 @@ use std::ffi::OsString;
 use std::fmt::Debug;
 use std::fs::remove_file;
 use std::io;
+use std::marker::PhantomData;
 use std::mem;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::AsFd;
@@ -39,19 +40,19 @@ use crate::Result;
 /// Some methods require working with raw bytes. You may find libraries such as
 /// [`plain`](https://crates.io/crates/plain) helpful.
 #[derive(Debug)]
-pub struct OpenMap {
+pub struct OpenMap<'obj> {
     ptr: NonNull<libbpf_sys::bpf_map>,
+    _phantom: PhantomData<&'obj ()>,
 }
 
 // TODO: Document members.
 #[allow(missing_docs)]
-impl OpenMap {
+impl<'obj> OpenMap<'obj> {
     /// Create a new [`OpenMap`] from a ptr to a `libbpf_sys::bpf_map`.
-    ///
-    /// # Safety
-    /// The pointer must point to an opened but not loaded map.
-    pub unsafe fn new(ptr: NonNull<libbpf_sys::bpf_map>) -> Self {
-        Self { ptr }
+    pub unsafe fn new(object: &'obj mut libbpf_sys::bpf_map) -> Self {
+        // SAFETY: We inferred the address from a reference, which is always
+        //         valid.
+        Self { ptr: unsafe { NonNull::new_unchecked(object as *mut _) }, _phantom: PhantomData, }
     }
 
     /// Retrieve the [`OpenMap`]'s name.
@@ -195,12 +196,12 @@ impl OpenMap {
 
     /// Convert the object into the underlying [`libbpf_sys::bpf_map`].
     pub fn into_libbpf_object(self) -> NonNull<libbpf_sys::bpf_map> {
-        let Self { ptr } = self;
+        let Self { ptr, _phantom: _ } = self;
         ptr
     }
 }
 
-impl AsRawLibbpf for OpenMap {
+impl AsRawLibbpf for OpenMap<'_> {
     type LibbpfType = libbpf_sys::bpf_map;
 
     /// Retrieve the underlying [`libbpf_sys::bpf_map`].

@@ -298,8 +298,8 @@ impl OpenObject {
     }
 
     /// Retrieve an iterator over all BPF maps in the object.
-    pub fn maps(&self) -> impl Iterator<Item = OpenMap> {
-        MapIter::new(unsafe { self.ptr.as_ref() }).map(|ptr| unsafe { OpenMap::new(ptr) })
+    pub fn maps(&self) -> impl Iterator<Item = OpenMap<'_>> {
+        MapIter::new(unsafe { self.ptr.as_ref() }).map(|mut ptr| unsafe { OpenMap::new(ptr.as_mut()) })
     }
 
     /// Get a reference to `OpenProgram` with the name `name`, if one exists.
