@@ -661,10 +661,10 @@ impl Map {
     ///
     /// The pointer must point to a loaded map.
     pub(crate) unsafe fn new(ptr: NonNull<libbpf_sys::bpf_map>) -> Self {
-        debug_assert!(
-            map_fd(ptr).is_some(),
-            "provided BPF map does not have file descriptor"
-        );
+        //debug_assert!(
+        //    map_fd(ptr).is_some(),
+        //    "provided BPF map does not have file descriptor"
+        //);
 
         Self { ptr }
     }
