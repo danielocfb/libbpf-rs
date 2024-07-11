@@ -9,22 +9,19 @@ use std::io;
 use std::io::Read as _;
 use std::io::Write as _;
 use std::mem::MaybeUninit;
+use std::mem::swap;
 use std::net::TcpListener;
 use std::net::TcpStream;
 use std::os::fd::AsFd as _;
 use std::os::fd::AsRawFd as _;
 use std::os::fd::BorrowedFd;
 use std::os::unix::ffi::OsStrExt as _;
-use std::ptr::copy_nonoverlapping;
 use std::thread;
 
 use clap::Parser;
 
-use the_original_libbpf_rs::skel::OpenSkel;
 use the_original_libbpf_rs::skel::SkelBuilder;
-use the_original_libbpf_rs::AsRawLibbpf as _;
 use the_original_libbpf_rs::ErrorExt as _;
-use the_original_libbpf_rs::ErrorKind;
 use the_original_libbpf_rs::Result;
 
 use libc::setsockopt;
@@ -116,67 +113,21 @@ fn send_recv(tcp_ca: &OsStr) -> Result<()> {
 }
 
 fn test(name_to_register: Option<&OsStr>, name_to_use: &OsStr, verbose: bool) -> Result<()> {
-    let mut skel_builder = TcpCaSkelBuilder::default();
-    if verbose {
-        skel_builder.obj_builder.debug(true);
-    }
+    let skel_builder1 = TcpCaSkelBuilder::default();
+    let mut open_object1 = MaybeUninit::uninit();
+    let mut open_skel1 = skel_builder1.open(&mut open_object1)?;
+    let prog1 = &mut open_skel1.progs.ca_update_init;
 
-    let mut open_object = MaybeUninit::uninit();
-    let mut open_skel = skel_builder.open(&mut open_object)?;
+    let skel_builder2 = TcpCaSkelBuilder::default();
+    let mut open_object2 = MaybeUninit::uninit();
+    let mut open_skel2 = skel_builder2.open(&mut open_object2)?;
+    let prog2 = &mut open_skel2.progs.ca_update_init;
 
-    if let Some(name) = name_to_register {
-        // Here we illustrate the possibility of updating `struct_ops` data before
-        // load. That can be used to communicate data to the kernel, e.g., for
-        // initialization purposes.
-        let ca_update = open_skel.struct_ops.ca_update_mut();
-        if name.as_bytes().len() >= ca_update.name.len() {
-            panic!(
-                "TCP CA name `{}` exceeds maximum length {}",
-                name.to_str().unwrap(),
-                ca_update.name.len()
-            );
-        }
-        let bytes = name.as_bytes();
-        let len = bytes.len();
-        let () =
-            unsafe { copy_nonoverlapping(bytes.as_ptr(), ca_update.name.as_mut_ptr().cast(), len) };
-        let () = ca_update.name[len..].fill(0);
-    }
+    swap(prog1, prog2);
+    drop(open_skel1);
 
-    let ca_update_cong_control2 = open_skel
-        .progs
-        .ca_update_cong_control2
-        .as_libbpf_object()
-        .as_ptr();
-    let ca_update = open_skel.struct_ops.ca_update_mut();
-    ca_update.cong_control = ca_update_cong_control2;
+    println!("PROG TYPE: {:?}", prog2.prog_type());
 
-    let mut object = MaybeUninit::uninit();
-    let mut skel = open_skel.load(&mut object)?;
-    let _link = skel.maps.ca_update.attach_struct_ops()?;
-
-    println!(
-        "Registered `{}` congestion algorithm; using `{}` for loopback based data exchange...",
-        name_to_register.unwrap_or(name_to_use).to_str().unwrap(),
-        name_to_use.to_str().unwrap()
-    );
-
-    // NB: At this point `/proc/sys/net/ipv4/tcp_available_congestion_control`
-    //     would list the registered congestion algorithm.
-
-    assert_eq!(skel.maps.bss_data.ca_cnt, 0);
-    assert!(!skel.maps.bss_data.cong_control);
-
-    // Use our registered TCP congestion algorithm while sending a bunch of data
-    // over the loopback device.
-    let () = send_recv(name_to_use)?;
-    println!("Done.");
-
-    let saved_ca_cnt = skel.maps.bss_data.ca_cnt;
-    assert_ne!(saved_ca_cnt, 0);
-    // With `ca_update_cong_control2` active, we should have seen the
-    // `cong_control` value changed as well.
-    assert!(skel.maps.bss_data.cong_control);
     Ok(())
 }
 
@@ -185,20 +136,5 @@ fn main() -> Result<()> {
 
     let tcp_ca = OsStr::new(TCP_CA_UPDATE);
     let () = test(None, tcp_ca, args.verbose)?;
-
-    // Use a different name under which the algorithm is registered; just for
-    // illustration purposes of how to change `struct_ops` related data before
-    // load/attachment.
-    let new_ca = OsStr::new("anotherca");
-    let () = test(Some(new_ca), new_ca, args.verbose)?;
-
-    // Just to be sure we are not bullshitting with the above, use a different
-    // congestion algorithm than what we register. This is expected to fail,
-    // because said algorithm to use cannot be found.
-    let to_register = OsStr::new("holycowca");
-    let err = test(Some(to_register), tcp_ca, args.verbose).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::NotFound);
-    println!("Expected failure: {err:#}");
-
     Ok(())
 }
